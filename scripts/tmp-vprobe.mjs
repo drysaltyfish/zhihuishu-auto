@@ -1,0 +1,24 @@
+import fs from 'node:fs';
+const u = new URL(fs.readFileSync('data/server.url','utf8').trim());
+const t = u.searchParams.get('t');
+const base = 'http://127.0.0.1:8731';
+const api = (p, body) => fetch(base+p+'?t='+t, body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{}).then(async r=>({s:r.status,b:await r.json()}));
+const st = async () => (await api('/api/state')).b;
+const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+console.log('start', (await api('/api/start',{})).s);
+let t0=Date.now(), a;
+while (Date.now()-t0<120000) { a = await st(); if (a.phase==='PLAYING' || a.phase==='WAIT_VERIFY') break; await sleep(2000); }
+console.log('phase=', a.phase, 'ct=', a.video&&Math.round(a.video.ct), 'verifyHint=', a.verifyHint);
+await sleep(3000);
+console.log('verifyprobe:', (await api('/api/control',{action:'verifyprobe'})).s);
+await sleep(6000);
+const files = fs.readdirSync('data/debug').filter(f=>f.startsWith('verifyprobe-')).sort();
+const last = files[files.length-1];
+console.log('file:', last);
+const j = JSON.parse(fs.readFileSync('data/debug/'+last,'utf8'));
+console.log('url:', j.url);
+console.log('iframe count:', (j.iframes||[]).length);
+for (const f of (j.iframes||[]).filter(f=>f.vis || /captcha|verify/i.test(f.src))) console.log(' iframe', JSON.stringify(f));
+console.log('boxes:');
+for (const b of (j.boxes||[]).filter(b=>b.w>100&&b.h>40)) console.log(' ', JSON.stringify(b));
+console.log(fs.readFileSync('data/runtime.log','utf8').trim().split('\n').slice(-6).join('\n'));

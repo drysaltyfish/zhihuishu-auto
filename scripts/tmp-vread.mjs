@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+const files = fs.readdirSync('data/debug').filter(f=>f.startsWith('verifyprobe-')&&f.endsWith('.json')).sort();
+const last = files[files.length-1];
+console.log('file:', last);
+const j = JSON.parse(fs.readFileSync('data/debug/'+last,'utf8'));
+console.log('url:', j.url);
+console.log('frames:', (j.frames||[]).map(f=>f.url).join(' | ').slice(0,300));
+console.log('iframe count:', (j.iframes||[]).length);
+for (const f of j.iframes||[]) console.log(' iframe', JSON.stringify(f));
+console.log('boxes (w>80,h>30):');
+for (const b of j.boxes||[]) if (b.w>80&&b.h>30) console.log(' ', JSON.stringify(b));

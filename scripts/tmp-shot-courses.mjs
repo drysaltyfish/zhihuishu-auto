@@ -1,0 +1,12 @@
+import { chromium } from 'playwright';
+import fs from 'node:fs';
+const url = fs.readFileSync('data/server.url', 'utf8').trim();
+const br = await chromium.launch({ headless: true, channel: 'chrome' });
+const pg = await br.newPage({ viewport: { width: 1440, height: 980 } });
+await pg.goto(url, { waitUntil: 'domcontentloaded' });
+await new Promise((r) => setTimeout(r, 2500));
+fs.mkdirSync('docs', { recursive: true });
+await pg.screenshot({ path: 'docs/ui-courses.png', fullPage: true });
+const txt = await pg.locator('.wrap').innerText();
+console.log(txt.split('\n').filter((x) => x.trim()).slice(0, 26).join(' | '));
+await br.close();

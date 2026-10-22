@@ -1,0 +1,14 @@
+:root{
+  --bg:#0b0f17; --panel:#121826; --panel2:#161e2e; --line:#1f2a3d;
+  --txt:#e6edf7; --dim:#8b9bb4; --dim2:#5b6b83;
+  --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --acc:#4c8dff;
+}
+*{box-sizing:border-box}
+html,body,#app{height:100%}
+body{
+  margin:0; background:radial-gradient(1200px 600px at 70% -10%,#16233a 0%,var(--bg) 55%);
+  color:var(--txt); font:14px/1.55 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;cursor:pointer;border:none;border-radius:8px;transition:.15s}
+button:disabled{opacity:.45;cursor:not-allowed}

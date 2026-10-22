@@ -1,0 +1,14 @@
+import fs from 'node:fs';
+import { chromium } from 'playwright';
+const u = fs.readFileSync('data/server.url', 'utf8').trim();
+const br = await chromium.launch({ headless: true, channel: 'chrome' });
+const p = await br.newPage({ viewport: { width: 1440, height: 980 } });
+const errs = []; p.on('pageerror', (e) => errs.push(String(e)));
+await p.goto(u, { waitUntil: 'networkidle' });
+await new Promise((r) => setTimeout(r, 1500));
+const mainJs = await p.evaluate(() => [...document.querySelectorAll('script')].map((s) => s.src).join(','));
+const txt = (await p.locator('.wrap').innerText()).replace(/\n/g, ' | ');
+console.log('资源:', mainJs);
+console.log('界面文本:', txt.slice(0, 220));
+console.log('有「下一题」卡:', await p.locator('.nextq').count(), '| 提示条容器:', await p.locator('.hintwrap').count(), '| 页面报错:', errs.length ? errs : '无');
+await br.close();

@@ -1,0 +1,315 @@
+# 智慧树自动听课 —— 设计与实施计划（B 方案：极小化足迹）
+
+> 状态：**已实现并在真实课程上跑通**（2026-10-21 晚，见第 10 节）。第 0–9 节是最初的设计与实测依据，保留作背景；实现细节以第 10 节与 README.md 为准。
+
+---
+
+## 0. 当前硬事实（决定一切）
+
+| 事实 | 证据 |
+|---|---|
+| 账号 userId **908402579** 被平台上报一次脚本异常 | collector2c 上报体：`module=SHARECOURSE_SCRIPTS, code=101, courseId=1000158939, recruitId=477311, videoId=94593539, lessionId=1002323419, createTime=2026/10/21 16:26:21` |
+| 现场表现 | 点进课程 → 提示「检测到异常脚本」→ 约 3 秒后自动跳回主界面 |
+| 处罚 | **学习进度没有掉**（用户确认） |
+| 触发原因 | 不是无头/藏屏，是**行为**：探针在页面内 `el.click()` 点了 16 次随机 DOM（`isTrusted=false`）+ 700ms 全量 DOM 扫描。第一轮「零点击零注入」10 分钟零上报 |
+| 弹题契约（重大收获） | `POST /gateway/t/v1/popupAnswer/loadVideoPointerInfo` → `{"questionPoint":[{"timeSec":425,"questionIds":"1097920778"},{"timeSec":1259,"questionIds":"1097920779"}]}` —— **题目时间点与题号提前下发** |
+| 第一轮 0 弹题的原因 | 视频从 427.99s 开始，已越过 425s 那个弹题点 |
+| `navigator.webdriver` | 加 `--disable-blink-features=AutomationControlled` 后为 `false`；实测平台**不查**这一项（第一轮 true 也零上报） |
+
+**门禁：账号是否已解封，必须先由用户在自己日常用的 Chrome 里手动点进课程确认。未解封前不做任何自动化验证。**
+
+---
+
+## 1. B 方案三条铁律
+
+1. **页面内零注入**：不放 MutationObserver、不放 setInterval、不改 DOM。被动数据一律靠 CDP 的 Network 事件（不触碰页面 JS）。
+2. **点击只发生在真弹题的瞬间**，且只点对话框内的「选项」和「提交」两个元素，走 Playwright 真实输入（`isTrusted=true`）。绝不用 `el.click()`。
+3. **平时完全待机**：靠 `loadVideoPointerInfo` 拿到的 `timeSec` 列表，只在 `timeSec-15s ~ timeSec+60s` 窗口内进入待命态，其余时间一秒钟一次只读轮询（`video.currentTime` + `#playTopic-dialog` 可见性）。
+
+> 为什么第 3 条关键：第一轮 10 分钟零上报证明「只播放 + 低频只读采样」是安全的；第二轮被上报证明「乱点乱扫」是致命的。把行为限制在「人也会做的事」上，是唯一可行的边界。
+
+---
+
+## 2. 进程架构
+
+```
+┌────────────────────────────────────────────┐
+│  ui (Vue3 + Vite, 构建为静态)                │
+│  127.0.0.1:<port>/?t=<one-time-token>      │
+└───────────────┬────────────────────────────┘
+                │ HTTP + SSE（单向状态推送）
+┌───────────────▼────────────────────────────┐
+│  server (Node ESM 单进程)                    │
+│  ├ http.mjs      路由 / 静态托管 / token 校验  │
+│  ├ errors.mjs    错误码 → 中文人话（不透堆栈）  │
+│  ├ store.mjs     state.json 原子写 / 断点续学  │
+│  └ supervisor.mjs 管理 worker 生命周期+重启   │
+└───────────────┬────────────────────────────┘
+                │ child_process IPC（崩溃隔离）
+┌───────────────▼────────────────────────────┐
+│  worker (Node, 独占 Playwright)              │
+│  ├ session.mjs   启动 Chrome / 登录 / 持久化  │
+│  ├ course.mjs    课程列表 / 任务点 / 未听完筛选 │
+│  ├ player.mjs    播放主状态机 + 弹题窗口       │
+│  ├ pointer.mjs   解析 loadVideoPointerInfo    │
+│  └ answer.mjs    取题 / 随机作答 / 提交       │
+└────────────────────────────────────────────┘
+```
+
+**为什么 worker 独立进程**：Playwright 崩溃、Chrome 崩溃、页面跳转异常都只杀 worker，server 与 UI 不动，supervisor 自动拉起（限速：每小时最多 3 次）。这是「禁止崩溃」要求的落地方式。
+
+---
+
+## 3. 目录结构
+
+```
+zhihuishu-auto/
+├─ start.bat                  一键启动（双击）
+├─ package.json               根：脚本编排
+├─ server/
+│  ├─ package.json
+│  └─ src/
+│     ├─ index.mjs            HTTP + SSE + 静态托管
+│     ├─ errors.mjs           ErrorCode → 用户文案
+│     ├─ store.mjs            data/state.json 原子读写
+│     ├─ supervisor.mjs       worker 拉起/看护/重启限速
+│     └─ worker/
+│        ├─ main.mjs          IPC 入口，全部 try/catch
+│        ├─ session.mjs       Chrome 启动参数 / 登录策略
+│        ├─ course.mjs        课程与任务点解析
+│        ├─ player.mjs        播放 + 弹题状态机
+│        └─ answer.mjs        答题（随机）
+├─ web/                       Vue3 + Vite
+│  ├─ src/App.vue
+│  ├─ src/api.js              fetch + token
+│  └─ src/views/{Login,Courses,Player,Settings}.vue
+└─ data/                      【可整删】profile/ logs/ state.json
+```
+
+**`data/` 是唯一可变目录**，UI 上有「清空全部数据」按钮（删 profile + logs + state），重置不需要重装。
+
+---
+
+## 4. 学习主状态机
+
+```
+IDLE
+ └─> LAUNCHING ──> WAIT_LOGIN ──> COURSE_LIST ──> COURSE_PICK
+                                                     │
+                                                     v
+                                                  PLAYING ──(ct 接近 timeSec)──> ARMED
+                                                     ^                             │
+                                                     │                       (弹窗出现)
+                                                     │                             v
+                                                     └──── ANSWERING(随机作答) <────┘
+                                                     │
+                                              (本章任务点完成)
+                                                     v
+                                                 NEXT_TASK ──> PLAYING
+```
+
+- **断点续学**：`state.json` = `{ courseId, recruitId, lessonId, taskPointId, lastCt, updatedAt }`，每次状态变化原子写（`.tmp` + rename）。
+- **"从没听过的地方开始"**：不靠自己记，靠平台自己 —— 进课程后读 `loadVideoPointerInfo` 与任务点进度，自然落在未完成处。
+- **任意时刻退出**：UI 点「停止」→ 向 worker 发 `SIGTERM` 语义的 IPC 消息 → worker 关 Chrome → 写最后一次 state → 退出。进程被杀也能靠 state.json 恢复。
+
+---
+
+## 5. 多登录方式（统一 `LoginStrategy` 接口）
+
+| 方式 | 实现 | 备注 |
+|---|---|---|
+| 扫码（微信/QQ） | 打开有头窗口，SSE 通知前端"去扫码"，轮询登录 cookie | 最稳，首选 |
+| 手机号 + 密码 | 有头窗口自动填写；**不落盘明文** | 平台可能弹滑块 |
+| 手机号 + 短信码 | 前端输入验证码回传 worker 填入 | 备用 |
+
+登录成功判据：cookie `^(CASLOGC|jt-cas|SERVERID_CAS)$` 且值长度 > 10（`SERVERID` 是负载均衡 cookie，**不能**当登录标志，已踩过坑）。
+
+---
+
+## 6. 用户信息保护
+
+- HTTP 只监听 `127.0.0.1`，启动生成一次性 token 放 URL hash，所有 API 校验，防别的网页 CSRF 打本地端口。
+- 不存明文密码；不存 apikey（LLM 已废弃）。
+- `secretStr` / cookie 值进日志一律打码（只留长度与前后 4 字符）。
+- UI 提供「清空全部数据」。
+
+---
+
+## 7. 错误包装（报错不直抛）
+
+```js
+// errors.mjs
+{ code: 'LOGIN_TIMEOUT', message: '登录没完成，请重新扫码', hint: '确认手机端已确认登录', retryable: true }
+```
+worker 内任何异常 → 只上报 `{code, message, hint}`，堆栈仅写本地日志文件，**永不进前端**。
+
+---
+
+## 8. 待验证清单（下次有 30 分钟时的顺序）
+
+| # | 验证项 | 判据 | 风险 |
+|---|---|---|---|
+| V1 | 账号是否解封 | 日常 Chrome 手动点进课程，不再提示、不再跳回 | 无（手动） |
+| V2 | 干净 profile + 零注入，进课程并播放 10 分钟 | collector2c 上报 = 0 | 低（复刻第一轮） |
+| V3 | 走到 `timeSec`（如 425s）时弹题 | 抓到 `#playTopic-dialog` 结构、题目文本、选项、提交前后 `currentTime` | 中（必须真弹） |
+| V4 | 故意答错 | 看是否回退 / 重弹 / 进度不记 | 中 |
+| V5 | `loadVideoPointerInfo` 能否在页面内重复调用 | 能 → 可预取题目；不能 → 只能靠弹窗出现再读 | 低 |
+
+**V3/V4 是唯一还没验证的环节，也是整个项目的成败点。**
+
+---
+
+## 9. 待确认的三个决策（默认值已给，回「默认」即按此实现）
+
+| # | 决策 | 默认 |
+|---|---|---|
+| D1 | 单账号单实例 / 多账号 | **单账号单实例**（个人自用，进程内一个 Chrome） |
+| D2 | 后端语言 | **Node ESM**（与 Playwright 同运行时，一键启动只需一个 node） |
+| D3 | 一键启动形态 | **构建后由后端托管静态，单进程单端口**（不用 dev 双进程；双击 start.bat 就开） |
+
+---
+
+## 10. 已实现（2026-10-21 晚，真实课程验证）
+
+### 10.1 自动跳节（默认开，可关）
+
+课程树 DOM 的三种状态（`li.clearfix.video` 内）：
+
+| 状态 | DOM 标记 | 处理 |
+|---|---|---|
+| 已看完 | `b.time_icofinish`，文本只剩时长、无百分比 | 跳过，不再重播 |
+| 看了一半 | `b.time_ico_half` + `[role=progressbar][aria-valuenow]`（如 55） | 优先接着看 |
+| 未开始 | 两者都无 | 备选 |
+
+- `readCourseInfo()` 采集每节 {code,name,pct,durSec,current,chapter,icons,finished,half,doneAttr}，patch 到 state.lessons 与 summary.chapter/course。
+- `pickAutoLesson()`：排除当前节后，优先 pct 在 1..99 的，其次 pct 为空或 0 且未完成的。
+- `currentLooksDone()`：doneAttr 或 pct>=100。
+- `maybeAdvanceLesson(force)`：15 秒节流；主循环每 tick 调 maybeAdvanceLesson(false)，video.ended 调 (true)。**force 时即使平台还没刷新成已完成也按播完处理**（这是修过的 bug：曾经永远不跳）。
+- 没有下一节时一次性提示「这门课能自动听的节都听完了」；autoAdvance 关闭时 ended 停下等你手动选。
+
+### 10.2 手动选节（POST /api/lesson）
+
+- 前端课程目录点击 → server/index.mjs → real-engine.control(lesson, data) → worker 的 cmd=lesson 分支 → clickLesson(code)。
+- `clickLesson`：先关掉挡路的弹题弹窗 → 已在目标节则直接返回 → `page.locator("li.video")` 按 "code + 空格" 前缀找项 → scrollIntoViewIfNeeded → **page.mouse.click（isTrusted=true）** → 最多 3 轮等待视频 key 变化，失败才 dump 截图。
+- **铁律**：永不用 `element.click()`。合成事件会触发「检测到异常脚本」并强制跳回学堂，曾实测触发。
+
+### 10.3 答题（server/llm.mjs）
+
+- `pickLetter()` 四级解析（行首字母 → 答案/选项引导词 → 唯一字母）；`buildPrompt()` 只给题干+选项；`askLLM(llm,{question,options})` 用 temperature:0、max_tokens>=256（默认 1024）、30s 超时，content 为空时回落 reasoning_content。
+- **deepseek-flash 是推理模型**：max_tokens:8 会让 8 个 token 全花在 reasoning 上、content 为空 —— 这是曾出现的「模型没给字母」根因。
+- 答案字母与选项 label 比对得对错，写 history，界面「最近答题」展示；模型自检 POST /api/llmcheck 用固定样题（正确答案 B）。
+- 没配 key 时**不随机作答**（避免平台记错分），只提示并暂停。
+
+### 10.4 反脚本自愈
+
+- `detectAbnormal()` 扫可见的 .el-message-box / .el-dialog / .layui-layer 文本是否含「异常脚本」或「关闭插件」；
+- `recoverFromAbnormal(why)` 30 秒限流 → goto 上次 stuStudy URL（模块级 lastStudyUrl）→ 重新 findVideo → readCourseInfo → applyPlaying。
+
+### 10.5 已验证的链路（真实课程 21:24 / 21:45 / 21:51）
+
+1. 已登录态 → 自动回上次课程 → 当前节已完成 → 2 秒内自动切到 55% 的 1.3；
+2. 弹题点 214/406 提前下发 → 406s 处弹题（已答过）识别为「已提交 正确 正确答案 C」→ 只关弹窗 → 回到 PLAYING；
+3. 新弹题走 LLM：LLM 选择 C.（模型回：C）→ 答对了（我选 C，正确答案 C）→ 关闭 → 继续播；
+4. 全程播放时间与墙钟 1:1，无反脚本提示；
+5. 手动切节 2.1 与 1.3 互切均在 3–5 秒内生效。
+
+### 10.6 运维注意
+
+- 长期跑服务：先设置环境变量 ZHS_DEBUG=1，再用 pwsh 的 Start-Process 起 `node server/index.mjs`（-WindowStyle Hidden，输出重定向到 data/server.log）；用 bash 里 detached spawn 起会被脚本退出连坐杀掉。
+- 自检/联调必须设置 ZHS_DATA=data/selftest-xxx，否则会覆盖真实服务的 data/server.url（token 只在内存，覆盖后只能重启服务）。
+- batch 文件必须 GBK(cp936)+CRLF，改完用 scripts/to-gbk.ps1 转换，否则 cmd 会乱码报错。
+
+### 10.7 课程级选择（2026-10-21 晚）
+
+- worker 的 `listCourses()` 新开一个标签进 `LEARN_HOME = https://onlineweb.zhihuishu.com/onlinestuh5`，从 `.item-left-course` 卡片里读课程名 / 老师 / 学校 / `.processNum` 进度 / `recruitId`，读完关标签；结果放进 `state.courses`。
+- `switchCourse(index)`：用**真实鼠标**点那张卡片的 `.courseName`（实测点了就会跳到 `studyvideoh5.zhihuishu.com/stuStudy?recruitAndCourseId=...`，不需要解析那串加密 id），再把页面换成新打开的 stuStudy 页，重置节/弹题点状态，重读课程树。
+- 三条必须记住的坑：
+  1. `ctx.on('page')` 不能顺手把全局 `page` 改成新标签——助手标签被关后全局 page 指向死页面，主循环会刷「页面已关闭」。改成 `watchPage()` 只挂监听、`setPage()` 显式指定当前页。
+  2. 切课时关标签页只能关自己的导航标签和旧的 stuStudy 页，**不能关助手标签**（`helperPages` 集合保护），否则会把并发跑的 `listCourses` 标签关掉。
+  3. 读课程列表 / 探针标签一律不许 close 主播放页（早期探针关过一次，直接让主循环报 `Target page, context or browser has been closed`）。
+- 接口：`POST /api/courses`（读列表）、`POST /api/course {index}`（切课）；空闲/已退出时都返回 409 + 中文 hint。
+
+### 10.8 人机验证（风控挑战）——2026-10-21 深夜
+
+触发：短时间反复重启 / 连续点课程树 / 来回切课，腾讯 tcaptcha 弹出「请完成安全验证」（点选式：按提示点击指定字形）。
+实测（22:37）它会把课程树点击全部吃掉，worker 表现为 `点了 6.1 但视频没变`，如果不处理就会一直重试、继续加重风控。
+
+**为什么不自动解**
+- 用用户截图实测 deepseek-flash 视觉：能读对提示原文（「请点击灰色小写 k朝向一样的小写i」）和 6 个字符的颜色/字形/相对位置，
+  但**不知道真实像素尺寸**（把 2048×1156 猜成 1920×1080），坐标只能估；要求输出 JSON 时 reasoning 把 4096 token 烧完、
+  content 为空（推理模型特性），单次 20s。用于点选验证码命中率不可接受。
+- 代价不对称：点错会升级风控（更严验证/短信），而人工点一次只要 3 秒。
+
+**实现（server/worker/main.mjs）**
+- `detectVerify()`：遍历 frames，匹配「在屏幕内」的验证码容器文本（`/请完成安全验证|拖动滑块|按住滑块|请依次点击/`）
+  或 `iframe[src*=captcha|verify|turing\.]`。
+  **坑**：腾讯 tcaptcha 的 iframe `#tcaptcha_iframe_dy` 是常驻的，平时放在 `y=-1000000`，
+  只判断 offsetWidth/Height>0 会误报；必须用 `getBoundingClientRect()` 判断在视口内（`bottom>0 && right>0 && top<vh && left<vw && top>-200`）
+  且尺寸 `>80×40`。
+- 命中：`pauseVideoQuiet()` → 截图 `verify-<ts>.png` → `patch({phase:'WAIT_VERIFY', verifyHint, notice:...})` → 每 2s 重检，"卡在这里"不入其它分支。
+- 消失后：`patch({phase:'PLAYING', verifyHint:'', notice:'人机验证已通过，继续听课'})` + `applyPlaying()`。
+- 重启/继续时清 `verifyHint`，避免界面残留旧提示。
+- 前端：`PHASE_LABEL.WAIT_VERIFY='等待人机验证'`、状态文字优先显示它、提示条新增紫色 `.hintbar.act` 样式（不 7 秒淡出）。
+- 调试：`ZHS_DEBUG=1` 时 `POST /api/control {action:'verifyprobe'}` 会把所有 iframe/候选容器的 src、class、位置尺寸存到
+  `data/debug/verifyprobe-*.json` + 截图（用来区分常驻 iframe 与真弹出）。
+
+### 10.9 「播完卡在 100%」与僵死兜底（2026-10-21 深夜 23:30 实测通过）
+
+**现象**：2.5 节播放到 `ct=534.73 === dur=534.73`、`paused=true`，界面仍显示「播放中」，日志自 23:12:14 起 4 分钟无输出，课程树里该节已 100%。
+
+**根因**：智慧树播放器在播完时只把视频暂停在 100%，**没有把 `video.ended` 置 true**。主循环只认 `if (v.ended)`，于是永远不进「切下一节」分支，反而落进「暂停就 `ensurePlaying()`」的循环里空转——看起来就是卡死。
+
+**修复（`server/worker/main.mjs` 主循环）**：
+```js
+// 有的播放器播完不会把 ended 置 true，只是暂停在 100%（实测 2.5 卡在这里），按「到结尾」处理
+const atEnd = v.dur > 0 && v.ct >= v.dur - 1.5;
+...
+if (v.ended || atEnd) { ... 走切下一节 ... }
+```
+日志会区分两种来源：`本节视频播完了`（ended 为真）/ `视频停在结尾（已到 100% 但没触发 ended）`（atEnd 命中）。
+
+**僵死兜底（防其它"暂停但没播完"的情况无声卡住）**：模块级 `frozenCt = -1` / `frozenTicks = 0`（与大循环其它状态量放一起）。暂停且无弹窗的分支里，进度不动就累加 `frozenTicks`：
+- 每 60 拍（约 60 秒）→ 日志「视频暂停且进度不动（Ns / Ns），再试着播一次」+ 提示条 + `ensurePlaying()`；
+- 超过 300 拍（约 5 分钟）→ 置 `phase='PAUSED'`，提示「视频像是卡住了：请在浏览器窗口里点一下播放键，或点『重启』」并清零计数；
+- 正常播放分支里两个变量复位。
+
+**另两处加固（`server/real-engine.mjs`）**：
+1. 退出后立刻重新开始时，旧 worker 的 `exit` 事件会落在新一轮上，误判成「后台异常退出（code=0），4 秒后自动恢复」并覆盖 `notice`。加了 `let childSeq = 0`，`spawnWorker()` 里 `const me = ++childSeq`，`child.on('exit', (code) => { if (me !== childSeq) return; onExit(code); })`。
+2. 更关键的一条：`/api/control {action:'quit'}` 之后立刻点「开始听课」时，旧 worker 还没退出，`spawnWorker()` 因 `if (child) return` 直接跳过，`send('start')` 发给了正在死的进程 → 报「后台进程错误：Channel closed」，任务停死在 STOPPED。修法：`start()` 里若 `child` 还在，置 `expectExit = true`，`child.once('exit', () => { expectExit = false; go(); })` 等旧进程真正退出再起新的；`onExit` 里**先把 `child = null` 清干净再 `if (expectExit) return;`**（顺序反了会导致新 worker 也起不来）。实测日志顺序：`正在退出后台…` → `等上一个后台退出后重新启动…` → `已退出，断点已保存` → `正在启动后台浏览器…` → 登录 → PLAYING，无「异常退出」。
+
+**验证**：2026-10-21 23:30:34 真实课程 2.6 节（539s）播到结尾 →
+`视频停在结尾（已到 100% 但没触发 ended），看看有没有下一节可切` → `本节 2.6 已看完，自动切到 3.1（还没开始）` → `已切到 3.1，时长 729s，从 0s 继续`，全程无人工介入。
+
+### 10.10 用户体验三处修正（2026-10-22 上午）
+
+用户反馈：①「下一题」不实时，新视频开始还显示「已到达本段末尾」，要等答完一题才更新；② 提示条不是浮空的，出现时页面元素被挤动，也没有手动关闭按钮；③ 误关前端网页后没有任何办法重新打开，服务端只是个没有标题的黑框。
+
+**① 下一题改成前端自己算**
+原来「下一题」只读 worker 推来的 `state.nextQuestion`（`server/worker/main.mjs` 里算），切视频后 worker 要等到下一次 tick/一次作答才会重算，中间就一直是旧值。现在 `web/src/App.vue` 增加 `nextQ` computed，直接由「本节 `questionPoints`（未答、时间在当前位置之后的最小者）+ `video.ct`」推导：
+
+```js
+const nextQ = computed(() => {
+  const s = S.value; if (!s) return null;
+  const ct = (s.video && s.video.ct) || 0;
+  const list = (s.questionPoints || []).filter((p) => !p.answered && p.state !== 'done');
+  const ahead = list.filter((p) => p.timeSec >= ct - 0.5).sort((a, b) => a.timeSec - b.timeSec);
+  if (!ahead.length) return null;
+  const q = ahead[0];
+  return { atSec: q.timeSec, questionId: q.questionIds, etaSec: Math.max(0, q.timeSec - ct) };
+});
+```
+
+面板分支顺序（避免答题瞬间显示「0 秒」）：`ANSWERING/ARMED` →「正在弹题」；有 `nextQ` → 倒计时；`!pointsLoaded` →「读取中」；都没有 →「本节没有更多题目」/「本节已播完，正在切下一节」。**不再出现误导性的「已到达本段末尾」**。
+
+**② 提示条改成浮空 + 可关闭**
+`.hintbar` 原来是 header 与 main 之间的正常流元素，出现/消失会把整页挤一下。改为外层 `.hintwrap{position:fixed;left:20px;bottom:20px;z-index:60;width:min(560px,calc(100vw - 40px))}`，内部照旧分 warn/act/bad 三种配色，末尾加 `button.hint-x`（×）。关闭用文本级记忆：`hintDismissed` 存被关掉的那条文案，`hintShow` 只在文案变化后重新显示（这样同一条不会被反复弹回来，新提醒照常出现）。带 `<transition name="fade">`。
+
+**③ 界面重新打开 + 服务窗口有名字**
+- 新增 `打开界面.bat`：读 `data/server.url`（里面是带 token 的地址），确认 127.0.0.1:8731 在 LISTENING，然后 `start "" "%ZHSURL%"`；服务没跑就提示先双击 start.bat。GBK + CRLF 编码。
+- `start.bat` 起服务的方式从 `start "" /min cmd /c "node server\index.mjs > data\server.log 2>&1"` 改成 `start "智慧树自动听课 - 服务运行中（关掉这个窗口=停止服务）" /min cmd /k "node server\index.mjs"`：任务栏有明确标题、日志在这个窗口里可见（不再是无名黑框），失败诊断也从 `data\runtime.log` 兜底读取。
+- 启动成功提示里写明：界面关了双击 `打开界面.bat`，或再双击一次 start.bat（已在跑会直接开界面）。
+
+**验证（2026-10-22 10:1x）**
+- 无头浏览器测 mock：提示条 `position:fixed`，出现前后 `.top/.grid/.card.course/.nextq` 坐标完全一致（只有日志卡因为新增一行日志变高 20px，属预期）；点 × 后提示条消失；切到 2.1 后「下一题」立即变成 `视频走到 03:43 · 题号 mock-2.1-0`（新视频的弹题点），不再停留在旧视频。
+- `node scripts/selftest.mjs` → **41/41 PASS**（新增：提示条浮空显示、提示条可手动关闭、提示条开关不引起重排、下一题面板不误报「本段末尾」）。
+- `打开界面.bat` 实测：服务在跑时打印带 token 地址并打开浏览器；服务没跑时给出中文提示。
