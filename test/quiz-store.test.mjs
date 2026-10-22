@@ -9,7 +9,7 @@ const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'zhs-quizstore-'));
 
 test('存盘后能读回来', () => {
   const dir = tmpDir();
-  const data = { '第一章': { status: 'done', score: 12, total: 12, at: 123 } };
+  const data = { 第一章: { status: 'done', score: 12, total: 12, at: 123 } };
   assert.equal(saveQuizzes(dir, data), true);
   assert.deepEqual(loadQuizzes(dir), data);
   assert.ok(fs.existsSync(quizzesPath(dir)));

@@ -20,22 +20,39 @@ function connect() {
       buf += chunk;
       let idx;
       while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
         const ev = /event: (\w+)/.exec(frame);
         const dm = /data: (.*)/s.exec(frame);
         if (!ev || !dm) continue;
-        let payload; try { payload = JSON.parse(dm[1]); } catch { continue; }
+        let payload;
+        try {
+          payload = JSON.parse(dm[1]);
+        } catch {
+          continue;
+        }
         if (ev[1] === 'logs' && Array.isArray(payload)) {
           for (let i = lastLogLen; i < payload.length; i++) W('[' + payload[i].kind + '] ' + payload[i].msg);
           lastLogLen = payload.length;
         }
         if (ev[1] === 'state') {
           const p = payload.phase + (payload.notice ? ' notice=' + payload.notice : '');
-          if (p !== lastPhase) { lastPhase = p; W('== phase ' + p); }
-          const pts = JSON.stringify((payload.questionPoints || []).map((q) => q.timeSec + ':' + (q.answered ? 'done' : 'next')));
-          if (pts !== lastPoints) { lastPoints = pts; W('== points ' + pts); }
-          const ct = Math.round(payload.video && payload.video.ct || 0);
-          if (ct !== lastCt) { lastCt = ct; W('== ct ' + ct + '/' + Math.round(payload.video.dur) + (payload.video.paused ? ' paused' : '')); }
+          if (p !== lastPhase) {
+            lastPhase = p;
+            W('== phase ' + p);
+          }
+          const pts = JSON.stringify(
+            (payload.questionPoints || []).map((q) => q.timeSec + ':' + (q.answered ? 'done' : 'next'))
+          );
+          if (pts !== lastPoints) {
+            lastPoints = pts;
+            W('== points ' + pts);
+          }
+          const ct = Math.round((payload.video && payload.video.ct) || 0);
+          if (ct !== lastCt) {
+            lastCt = ct;
+            W('== ct ' + ct + '/' + Math.round(payload.video.dur) + (payload.video.paused ? ' paused' : ''));
+          }
         }
       }
     });

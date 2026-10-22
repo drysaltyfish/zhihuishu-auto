@@ -27,11 +27,13 @@ export function mergePoints(prev, incoming, { newVideo = false } = {}) {
       return { timeSec: p.timeSec, questionIds: p.questionIds, answered: !!(old && old.answered) };
     });
     for (const old of points) {
-      if (old.answered && !merged.some((m) => String(m.questionIds) === String(old.questionIds))) merged.push({ ...old });
+      if (old.answered && !merged.some((m) => String(m.questionIds) === String(old.questionIds)))
+        merged.push({ ...old });
     }
     merged.sort((a, b) => a.timeSec - b.timeSec);
-    const changed = merged.length !== points.length
-      || merged.some((m, i) => m.timeSec !== (points[i] || {}).timeSec || m.answered !== (points[i] || {}).answered);
+    const changed =
+      merged.length !== points.length ||
+      merged.some((m, i) => m.timeSec !== (points[i] || {}).timeSec || m.answered !== (points[i] || {}).answered);
     return { points: merged, changed, mode: 'merged' };
   }
 

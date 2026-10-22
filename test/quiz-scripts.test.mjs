@@ -9,7 +9,9 @@ before(async () => {
   br = await chromium.launch({ headless: true, channel: 'chrome' });
   pg = await br.newPage();
 });
-after(async () => { await br.close(); });
+after(async () => {
+  await br.close();
+});
 
 /** 真实结构的试卷：两道题（第一题已选 B，第二题未选），含答题卡 */
 const PAPER = `
@@ -80,8 +82,15 @@ test('QUIZ_PAPER 认得 onChecked 选中态（智慧树不用原生 checked）',
   await pg.setContent('<!doctype html><html><body>' + PAPER + '</body></html>');
   const p = await pg.evaluate(QUIZ_PAPER);
   const opts = p.questions[0].options;
-  assert.deepEqual(opts.map((o) => o.checked), [false, true, false], JSON.stringify(opts.map((o) => o.checked)));
-  assert.equal(p.questions[1].options.every((o) => !o.checked), true);
+  assert.deepEqual(
+    opts.map((o) => o.checked),
+    [false, true, false],
+    JSON.stringify(opts.map((o) => o.checked))
+  );
+  assert.equal(
+    p.questions[1].options.every((o) => !o.checked),
+    true
+  );
 });
 
 test('QUIZ_PAPER 认得出「已经交过」的查看页（有得分、没有提交作业）', async () => {
@@ -122,7 +131,10 @@ test('QUIZ_PAPER：正常试卷不算 review', async () => {
 test('QUIZ_PAPER 读得出答题卡与按钮', async () => {
   await pg.setContent('<!doctype html><html><body>' + PAPER + '</body></html>');
   const p = await pg.evaluate(QUIZ_PAPER);
-  assert.deepEqual(p.card.map((c) => c.done), [true, false]);
+  assert.deepEqual(
+    p.card.map((c) => c.done),
+    [true, false]
+  );
   assert.ok(p.buttons.includes('下一题'));
   assert.ok(p.buttons.includes('提交作业'));
 });

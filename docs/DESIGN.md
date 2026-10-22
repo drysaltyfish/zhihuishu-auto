@@ -454,3 +454,175 @@ body{overflow:hidden}
 - 三档分辨率（1440×900 / 1280×800 / 1920×1080）实测 `document.documentElement.scrollHeight === innerHeight`（整页不滚动），`.ltree scrollWidth <= clientWidth`（无横向溢出），1920 下 `.wrap` 宽 1724（`max-width` 生效）。
 - 截图：`docs/ui-running.png`、`docs/ui-idle.png`、`docs/ui-stopped.png`、`docs/ui-verify.png` 由 selftest 重新生成（`docs/*.png` 不入库）。
 - `node scripts/selftest.mjs` → **50/50 PASS**：新增「课程胶囊能打开我的课程弹窗」「弹窗可以关掉」「仪表盘一屏放下」「课程目录没有横向溢出」「课程目录一屏显示完」；原 46 项里「运行页有『我的课程』卡」改成点胶囊断言弹窗。
+
+## 11. Windows 桌面化（2026-10-22）
+
+之前的形态是「双击 `start.bat` → 本地服务 → 浏览器打开带 token 的界面」：要求机器上有 Node、看得懂黑窗口、还得自己找到界面地址。桌面版要解决三件事：装完就能用（不装 Node、不装浏览器）、只有一个窗口、关掉窗口后还在托盘里继续跑。
+
+界面本身没有重写：`web/` 的 Vue 构建产物还是同一份（`server/public/`），桌面壳只是把本地服务的地址装进 `BrowserWindow`。引擎、状态机、反检测策略全部留在 `server/` 与 `server/worker/` 里，桌面版和「浏览器 + `node server/index.mjs`」共用同一套代码。
+
+### 11.1 选型
+
+| 组件 | 用途 | 为什么用它而不是自己写 |
+| --- | --- | --- |
+| Electron | 桌面壳 + 自带 Node 与 Chromium 运行时 | 打包产物里的 `electron.exe` 设置 `ELECTRON_RUN_AS_NODE=1` 后就是 Node，`server/index.mjs` 一行不改；也不存在「渲染进程里跑引擎」那种权限和安全问题 |
+| electron-builder | NSIS 安装包 | per-user 安装、extraResources、asar 开关、语言包都是配置项 |
+| electron-updater | 更新 | generic 静态目录即可发布，NSIS 配 blockmap 走差分下载，不用自己写下载/校验/替换 |
+| electron-log | 日志 | 主进程日志落文件、未捕获异常捕获、单文件尺寸上限，省掉一套轮转实现 |
+
+### 11.2 进程模型
+
+| 进程 | 入口 | 职责 | 怎么起 |
+| --- | --- | --- | --- |
+| main | `desktop/main.mjs` | 单实例锁、窗口、托盘、开机自启、IPC、日志、更新 | Electron 主进程 |
+| server | `server/index.mjs` | HTTP/SSE/静态文件、配置、引擎编排 | 主进程 `spawn(process.execPath, ["server/index.mjs", "--port", port])`，env 带 `ELECTRON_RUN_AS_NODE=1`、`windowsHide:true` |
+| worker | `server/worker/main.mjs` | 独占浏览器：登录 / 选节 / 播放 / 弹题 / 章节测试 | server 里 `fork`，崩溃自愈也在 server（1 小时最多 4 次） |
+
+**为什么用 `ELECTRON_RUN_AS_NODE`**：安装包里没有 `node.exe`。设置该变量后 `process.execPath`（即 `electron.exe`）按 Node 模式执行脚本，server 代码不用改；`windowsHide:true` 保证不弹黑框。
+
+**端口**：主进程先用 `net.createServer().listen(0, "127.0.0.1")` 拿一个空闲端口，再用 `--port` 传给子进程。server 在 stdout 打印 `http://127.0.0.1:<port>/?t=<token>`，主进程用正则捞出来加载窗口；45 秒没等到就进错误页。不再假设固定端口（只有直接 `node server/index.mjs` 调试时才默认 8731）。
+
+**token**：server 每次启动 `crypto.randomBytes(12)` 生成，路由层校验；窗口地址带 `?t=`，hash 路由切页时保留。旧地址在重启后失效，入口统一走托盘。
+
+**停止**：先 `SIGTERM`，5 秒后 `taskkill /pid <pid> /T /F`。Windows 上子进程树对 SIGTERM 不一定买账，必须有强杀兜底。
+
+**IPC**：`desktop/preload.cjs` 用 `contextBridge` 暴露 `window.desktop`（渲染进程 `sandbox:true`、没有 Node），界面按 `window.desktop?.xxx` 判空，浏览器调试版自动降级。
+
+| 通道 | 作用 |
+| --- | --- |
+| `desktop:openDataDir` | 打开 `data/` |
+| `desktop:openPath` | 打开 `data/` 内的文件或目录（只允许 dataDir 内） |
+| `desktop:exportLogs` | 导出日志 zip |
+| `desktop:checkUpdate` / `desktop:installUpdate` | 检查更新 / 下载并安装 |
+| `desktop:restartApp` | `app.relaunch()` 后退出（过滤 `--hidden`） |
+| `desktop:quitApp` | 真正退出程序 |
+| `desktop:retryServer` | 重启本地服务（错误页的「重试」） |
+| `desktop:getAutoStart` / `desktop:setAutoStart` | 读写开机自启 |
+
+`desktop/electron-api.mjs` 是统一入口：Electron 的 `electron` 模块是 CJS，ESM 里 `import { app } from "electron"` 静态分析不到命名导出，所以用 `createRequire` 取真身再按需导出，其它桌面模块都从这里拿 API。
+
+### 11.3 数据目录：只写安装目录内的 data/
+
+`desktop/paths.mjs` 按顺序取第一个**可写**的：
+
+1. 环境变量 `ZHS_DATA`（自检、多实例、开发用）；
+2. 打包版 `<安装目录>\data`；开发版 `<仓库>\data`；
+3. `%APPDATA%\ZhihuishuAuto\data` 兜底（安装目录不可写时）。
+
+可写性用写 `.write-test` 探测。`logDir = data/logs`、`electronDataDir = data/electron`、`browsersDir` 打包版是 `resources/browsers`、开发版是 `<仓库>/browsers`。
+
+**userData 重定向**：`app.setPath("userData", data/electron)`，让 Electron 自己的 Chromium 缓存也落在 `data/` 里，卸载时跟着 data 一起保留或删除。
+
+**踩过的坑（顺序不能反）**：`app.getPath("userData")` 和 `requestSingleInstanceLock()` 都会隐式创建 userData 目录。如果在 `setPath` 之前调用，Windows + Electron 45 上主进程会**静默退出**——没有窗口、没有报错、日志也没有。所以 `paths.mjs` 不调 `getPath("userData")`，兜底路径用 `getPath("appData")` 自己拼；`main.mjs` 的顺序固定为 `resolvePaths() → app.setPath("userData", …) → requestSingleInstanceLock()`。
+
+**取舍**：不写安装目录外 → 用户看得见、能备份、能整个删掉重置，卸载默认保留数据。代价是要求安装目录可写，所以安装包按 per-user 装（默认 `%LOCALAPPDATA%\Programs\ZhihuishuAuto`，不需要管理员）；万一装到 `Program Files` 这类只读位置，探测失败会退化到 `%APPDATA%\ZhihuishuAuto\data`。
+
+`data/` 里的内容：
+
+| 路径 | 内容 |
+| --- | --- |
+| `profile/` | Playwright 持久化 profile，智慧树登录态与 Cookie |
+| `config.json` | 模型配置（含 `llm.apiKey`） |
+| `state.json` | 断点（`resumeUrl`：上次在哪个视频） |
+| `quizzes.json` | 章节测试断点（每章做过没有、得分） |
+| `logs/main.log` | electron-log 主日志 |
+| `electron/` | Electron 的 Chromium 缓存（userData） |
+| `exports/` | 导出的日志 zip |
+| `login-qr.png` | 当前登录二维码（worker 从页面截图） |
+| `window.json` | 窗口位置与大小 |
+| `debug/` | 调试模式下的页面结构 / 截图，平时不生成 |
+
+### 11.4 窗口、托盘、单实例、开机自启
+
+- **窗口**：1440×900，最小 1180×720；`contextIsolation:true`、`nodeIntegration:false`、`sandbox:true`；无菜单；标题「智慧树自动听课」。位置和尺寸写 `data/window.json`，下次按上次的位置开。
+- **关闭窗口 = 隐藏**：`close` 事件里看 `quitting` 标志，没在退出就 `preventDefault()` + `hide()`；`window-all-closed` 不做任何事——托盘常驻，程序不退出。
+- **托盘**（`desktop/tray.mjs`）：菜单「打开界面 / 开机自动启动（勾选）/ 退出」；单击或双击图标也能打开界面；tooltip「智慧树自动听课」。
+- **单实例**：`requestSingleInstanceLock()` 拿不到锁直接退出；第二个实例触发 `second-instance`，把已有窗口 show / restore（也就是从托盘叫出来）。
+- **开机自启**：`app.setLoginItemSettings({ openAtLogin, path: process.execPath, args: ["--hidden"] })`；带 `--hidden` 启动时只进托盘、不弹窗。只在打包版生效，开发模式点开关会返回「开发模式不写开机自启」。
+- **退出**：`before-quit` 里置 `quitting`、停 server 子进程、销毁托盘。
+- **启动失败**：先显示 splash（data URL「正在启动本地服务…」）；服务起不来或子进程非 0 退出，就加载 `desktop/error.html?msg=…`，页面「重试」走 `retryServer` IPC，「退出程序」直接退出。
+
+### 11.5 浏览器策略
+
+- **优先系统 Chrome**：探测 `C:\Program Files\Google\Chrome\Application\chrome.exe`、`C:\Program Files (x86)\…`、`%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe`，命中就 `channel:"chrome"`。
+- **否则用内置 Chromium**：`scripts/install-browsers.mjs` 把 Playwright 的 Chromium 复制到仓库 `browsers/`（只留 chromium + winldd，删 headless_shell/ffmpeg），打包时 `extraResources` 进 `resources/browsers`；server 子进程通过 `PLAYWRIGHT_BROWSERS_PATH` 指过去。
+- **为什么两条路**：装了 Chrome 的机器用系统浏览器（更新勤、行为接近真人日常环境）；没装的也能跑（零环境）。代价是两者版本可能不同，平台表现以系统 Chrome 为主路径验证。
+- **窗口隐藏**：不用 `SW_HIDE`、最小化或 `display:none`——页面 `visibilityState` 会变 `hidden`，既可能被反爬判定，也会让后台定时器被节流。`server/worker/win-window.ps1` 用 `WS_EX_TOOLWINDOW` 去掉任务栏按钮，再用 `SetWindowPos` 移到 `(-32000,-32000)`；窗口仍算可见。启动参数同时带 `--window-position=-32000,-32000`，避免启动时闪一下。
+- **登录二维码**：worker 在登录中心点「通过微信登录」，把 `.wx-code-wrapper` 截到 `data/login-qr.png`，界面通过 `GET /api/qr` 取 PNG 显示在浮层里——用户不用去看浏览器窗口。
+- **体积代价**：`browsers/` 解压后约 446 MB（其中 `chromium-1248` 约 437 MB）。
+
+### 11.6 日志策略
+
+- electron-log 写 `data/logs/main.log`，单文件上限 5 MB（写满换新文件），格式为「时间 + 级别 + 正文」。
+- 启动时清理：先删超过 14 天的日志；再按 mtime 从旧到新删，直到 `logs/` 总量 ≤ 30 MB。
+- `errorHandler.startCatching({ showDialog:false })`：未捕获异常进日志，不弹系统对话框。
+- 导出：`AdmZip` 写 `data/exports/zhihuishu-logs-<时间戳>.zip`，包含 `logs/*.log`、`system.txt`（版本 / Electron / Chrome / Node / 系统 / 是否安装版 / 数据目录 / 日志目录 / 生成时间）、`config（已隐藏 Key）.json`、`state.json`。
+- 脱敏：apiKey 变成「前 3 位 + `****` + 后 4 位」，导出前不提示、不询问，直接处理。
+- 为什么做导出：小白找不到安装目录，也不该把整个 `data/`（含登录态）发给别人；一个 zip 就够定位问题。
+
+### 11.7 更新策略
+
+- **默认禁用**：`resources/update.json` 的 `url` 为空 → 状态 `disabled`，文案「当前版本没有配置更新源，需要更新请重新下载安装包」。
+- **url 优先级**：环境变量 `ZHS_UPDATE_URL` > `resources/update.json`；非 http(s) 一律当未配置。
+- **更新源**：`provider:"generic"`，静态目录放 `latest.yml` + 安装包 + `.blockmap`。
+- **手动触发**：`autoDownload=false`、`autoInstallOnAppQuit=false`，只有用户点「检查更新」才发起；检查 25 秒超时。
+- **状态**：`disabled / idle / checking / available / downloading / none / ready / error`，事件都转成中文文案给界面。
+- **安装**：`desktop:installUpdate` → 未下载就 `downloadUpdate()`，已下载就 `quitAndInstall(false, true)`（先退出再装、装完自动启动）。**界面目前只接了 `desktop:checkUpdate`**，没有放下载/安装按钮；能力在 IPC / preload 这一层是齐的，要开放只需界面上加一个按钮。
+- **差分**：electron-updater 按 blockmap 只下载变化的块；安装仍是 NSIS 覆盖安装；升级不碰 `data/`。
+- 开发模式（`!app.isPackaged`）直接 `disabled`，不读配置。
+
+### 11.8 asar:false 的取舍
+
+开 asar 会把应用代码打成一个包，路径在其它进程眼里变成 `app.asar\…`。这里有四处要给真实路径：
+
+- server 子进程以 `server/index.mjs` 为入口、cwd 为 appRoot；
+- worker 用 `fork` 起独立进程；
+- worker 通过 `win-window.ps1` 调 PowerShell；
+- Playwright 需要真实的可执行文件与 profile 路径。
+
+所以 `asar:false`：安装目录里就是解开的文件，路径逻辑与开发态完全一致，排错能直接看文件。
+
+代价：文件多、首启比 asar 略慢、资源可被替换（本地小工具，接受）；装完 `win-unpacked` 约 779 MB（含 browsers）。真要开 asar 的话，需要给 `server/` 与 `server/worker/` 配 `asarUnpack`，或者把这几块拆到 `extraResources`；`browsers/` 与 `update.json` 现在已经是 extraResources，不受影响。
+
+### 11.9 打包配置要点（electron-builder.yml）
+
+| 配置 | 值 | 说明 |
+| --- | --- | --- |
+| `appId` | `com.zhihuishu.auto` | NSIS 的升级 / 卸载标识，改了等于换一个产品 |
+| `productName` | `ZhihuishuAuto` | 安装目录、进程名、快捷方式基础名 |
+| `output` | `release/` | 安装包与 `win-unpacked` 都在这 |
+| `buildResources` | `desktop/assets` | 图标等打包资源 |
+| `asar` | `false` | 见 11.8 |
+| `files` | `package.json`、`desktop/**`、`server/**` | web 构建产物已在 `server/public/`，一起打进去 |
+| `extraResources` | `browsers` → `resources/browsers`；`desktop/update.json` → `resources/update.json` | 内置浏览器与更新源配置 |
+| `win.target` | `nsis`，`x64` | 只出 Windows x64 安装包 |
+| `win.requestedExecutionLevel` | `asInvoker` | 不主动要管理员 |
+| `nsis` | `oneClick:false`、`perMachine:false`、`allowElevation:false`、`allowToChangeInstallationDirectory:true` | 向导式 per-user 安装，可改目录，不弹 UAC |
+| 快捷方式 | 桌面 + 开始菜单，名字「智慧树自动听课」 | 卸载显示名也是这个 |
+| `deleteAppDataOnUninstall` | `false` | 卸载保留 `data/` |
+| `artifactName` | `ZhihuishuAuto-Setup-${version}.${ext}` | 文件名带版本号 |
+| `electronLanguages` | `zh-CN`、`en-US` | 只留两种语言，减小体积 |
+
+构建命令：`npm run dist` = `npm run web:build` + `electron-builder --win nsis`；`npm run desktop:dir` 只出 `release/win-unpacked`，用来快速验证。
+
+### 11.10 已知限制
+
+- **未做代码签名**：Windows SmartScreen 会提示「未知发布者」，用户要点「更多信息 → 仍要运行」；企业策略可能直接拦截。
+- **包体大**：0.1.0 实测安装包 243 MB，装完 779 MB，其中内置 Chromium 约 446 MB。
+- **仅 Windows x64**：`win.target` 只配了 `nsis` + `x64`，macOS / Linux 没有产物。
+- **单实例**：第二个实例只唤起已有窗口，不会并行跑两份。
+- **内置 Chromium 版本跟随 Playwright**，与系统 Chrome 可能不同；平台行为以系统 Chrome 为主路径。
+- **开机自启只对安装版生效**，开发模式不写系统启动项。
+- **更新默认离线**：没配静态目录就永远不提示新版本；配了也要用户手动点「检查更新」。
+- **登录态在 `data/profile/`**：换机器或删掉 `data/` 需要重新扫码登录。
+
+### 11.11 构建产物现状（0.1.0）
+
+`release/` 下已有 `ZhihuishuAuto-Setup-0.1.0.exe`（243 MB）、`win-unpacked/`（779 MB）以及 `builder-debug.yml` 和构建日志；`browsers/` 里是 `chromium-1248` 与 `winldd-1007`（446 MB）。界面相关截图见 `docs/desktop-overview.png`、`docs/desktop-packaged.png`、`docs/ui-settings-desktop.png`（`docs/*.png` 不入库）。
+**安装动作本身没有在本机自动验证成功**，原因不在安装包：
+
+- 当前开发会话里，DSH 沙箱让**子进程写不进 `%LOCALAPPDATA%`**（`%LOCALAPPDATA%/Programs`、`%LOCALAPPDATA%/Temp` 都写不进去，虽然同一个 shell 自己的 `touch` 可以）。用最小 NSIS 探针（makensis 直接编的 hello-world 安装器）复现：装到工作目录成功、装到 `%LOCALAPPDATA%/Programs` 一个文件都不落地。
+- NSIS 在静默模式下遇到写失败会**吞掉错误并以 0 退出**，所以 electron-builder 的安装包在这里表现为「extract 到 %TEMP% 成功（1 GB）、复制到安装目录失败、5 次重试后退出 0」。换 oneClick 配置也一样，排除模板差异。
+- 静默安装参数还有一层坑：**Git Bash / MSYS 会把 `/S` 改写成路径**（实测 `/S` 变成 `S:/`），安装包收到坏参数就会弹向导；必须在 cmd / PowerShell 里执行，或加 `MSYS2_ARG_CONV_EXCL=*`。
+
+因此安装流程以用户双击验证为准；`win-unpacked` 形态则已完整验证（窗口、托盘、扫码登录、IPC、退出）。

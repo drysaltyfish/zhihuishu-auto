@@ -1,0 +1,51 @@
+# electron-builder 打包配置（Windows / NSIS 安装包）
+appId: com.zhihuishu.auto
+productName: ZhihuishuAuto
+copyright: 仅供本人学习使用，请遵守平台用户协议
+
+directories:
+  output: release
+  buildResources: desktop/assets
+
+# asar 关掉：worker 要用子进程 + Playwright，真实文件路径最省事
+asar: false
+
+files:
+  - package.json
+  - 'desktop/**/*'
+  - 'server/**/*'
+  - '!**/*.map'
+  - '!**/*.md'
+
+extraResources:
+  - from: browsers
+    to: browsers
+  - from: desktop/update.json
+    to: update.json
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: desktop/assets/icon.ico
+  artifactName: ZhihuishuAuto-Setup-${version}.${ext}
+  requestedExecutionLevel: asInvoker
+  # 让安装包体积小一点：只留中文/英文
+  electronLanguages:
+    - zh-CN
+    - en-US
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 智慧树自动听课
+  uninstallDisplayName: 智慧树自动听课
+  deleteAppDataOnUninstall: false
+  installerLanguages:
+    - zh_CN
+  language: '2052'
+  runAfterFinish: true

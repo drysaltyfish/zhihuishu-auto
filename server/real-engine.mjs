@@ -18,24 +18,33 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
   let expectExit = false;
   let wantRunning = false;
   let quitting = false;
-  let queue = [];               // 等 worker ready 后按顺序补发（原来单槽会被后一条覆盖）
-  let crashTimes = [];          // 用来限速自愈
+  let queue = []; // 等 worker ready 后按顺序补发（原来单槽会被后一条覆盖）
+  let crashTimes = []; // 用来限速自愈
   let reviveTimer = null;
-  let readyWait = null;         // start() 之后 index 用它等真正 ready 再推设置
+  let readyWait = null; // start() 之后 index 用它等真正 ready 再推设置
   let readyResolve = null;
 
   /** worker 就绪信号：index 不再用 setTimeout 赌 1.5 秒 */
   function armReadyWait() {
-    readyWait = new Promise((resolve) => { readyResolve = resolve; });
+    readyWait = new Promise((resolve) => {
+      readyResolve = resolve;
+    });
   }
 
   function settleReady() {
-    if (readyResolve) { const r = readyResolve; readyResolve = null; r(); }
+    if (readyResolve) {
+      const r = readyResolve;
+      readyResolve = null;
+      r();
+    }
   }
 
   function send(cmd, data) {
     if (child && ready) {
-      try { child.send({ type: 'cmd', cmd, data }); return true; } catch {}
+      try {
+        child.send({ type: 'cmd', cmd, data });
+        return true;
+      } catch {}
     }
     if (queue.length < 50) queue.push({ cmd, data });
     return true; // 已接收（先排队），不算失败
@@ -47,32 +56,50 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
       if (m.type === 'ready') {
         ready = true;
         settleReady();
-        const q = queue; queue = [];
+        const q = queue;
+        queue = [];
         for (const it of q) send(it.cmd, it.data);
         return;
       }
-      if (m.type === 'state' && m.patch) { applyPatch(state, m.patch); emit(); return; }
-      if (m.type === 'log') { pushLog(m.kind || 'info', m.msg || ''); return; }
+      if (m.type === 'state' && m.patch) {
+        applyPatch(state, m.patch);
+        emit();
+        return;
+      }
+      if (m.type === 'log') {
+        pushLog(m.kind || 'info', m.msg || '');
+        return;
+      }
     } catch (e) {
-      pushLog('err', '引擎消息处理失败：' + String(e && e.message || e).slice(0, 120));
+      pushLog('err', '引擎消息处理失败：' + String((e && e.message) || e).slice(0, 120));
     }
   }
 
   function onExit(code) {
     const wasReady = ready;
-    child = null; ready = false; queue = [];
+    child = null;
+    ready = false;
+    queue = [];
     settleReady(); // 别让正在等 ready 的调用方永远挂着
     if (expectExit) return; // 上一次 quit 的收尾退出，正在等它让位（状态已清好）
-    if (quitting) { pushLog('info', '后台已退出，断点已保存'); return; }
+    if (quitting) {
+      pushLog('info', '后台已退出，断点已保存');
+      return;
+    }
     if (!wantRunning) return;
-    if (!wasReady) { pushLog('err', '后台进程没能起来（可能是浏览器启动失败）'); }
+    if (!wasReady) {
+      pushLog('err', '后台进程没能起来（可能是浏览器启动失败）');
+    }
 
     const now = Date.now();
     crashTimes = crashTimes.filter((t) => now - t < 60 * 60 * 1000);
     crashTimes.push(now);
     if (crashTimes.length > 3) {
       wantRunning = false;
-      applyPatch(state, { phase: 'STOPPED', notice: '连续异常退出了 4 次，已停止自动恢复。请点「重启」再试，或检查浏览器是否被其他程序占用。' });
+      applyPatch(state, {
+        phase: 'STOPPED',
+        notice: '连续异常退出了 4 次，已停止自动恢复。请点「重启」再试，或检查浏览器是否被其他程序占用。',
+      });
       pushLog('err', '连续异常太多次，已停止自动恢复');
       emit();
       return;
@@ -81,7 +108,12 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
     emit();
     pushLog('warn', '后台异常退出（code=' + code + '），4 秒后自动恢复');
     clearTimeout(reviveTimer);
-    reviveTimer = setTimeout(() => { if (wantRunning && !quitting) { spawnWorker(); send('start'); } }, 4000);
+    reviveTimer = setTimeout(() => {
+      if (wantRunning && !quitting) {
+        spawnWorker();
+        send('start');
+      }
+    }, 4000);
   }
 
   function spawnWorker() {
@@ -95,8 +127,11 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
       armReadyWait();
       const me = ++childSeq;
       child.on('message', onMessage);
-      child.on('exit', (code) => { if (me !== childSeq) return; onExit(code); });
-      child.on('error', (e) => pushLog('err', '后台进程错误：' + String(e && e.message || e).slice(0, 160)));
+      child.on('exit', (code) => {
+        if (me !== childSeq) return;
+        onExit(code);
+      });
+      child.on('error', (e) => pushLog('err', '后台进程错误：' + String((e && e.message) || e).slice(0, 160)));
       if (child.stderr) {
         child.stderr.on('data', (d) => {
           const s = String(d).trim();
@@ -106,7 +141,7 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
         });
       }
     } catch (e) {
-      pushLog('err', '无法启动后台进程：' + String(e && e.message || e).slice(0, 160));
+      pushLog('err', '无法启动后台进程：' + String((e && e.message) || e).slice(0, 160));
       applyPatch(state, { phase: 'STOPPED', notice: '无法启动后台进程' });
       emit();
     }
@@ -114,7 +149,9 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
 
   return {
     start() {
-      wantRunning = true; quitting = false; crashTimes = [];
+      wantRunning = true;
+      quitting = false;
+      crashTimes = [];
       applyPatch(state, { mode: 'real', phase: 'LAUNCHING', notice: '' });
       emit();
       const go = () => {
@@ -127,27 +164,47 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
       if (child) {
         expectExit = true;
         pushLog('info', '等上一个后台退出后重新启动…');
-        child.once('exit', () => { expectExit = false; go(); });
+        child.once('exit', () => {
+          expectExit = false;
+          go();
+        });
         return;
       }
       go();
     },
     control(action, data) {
-      if (action === 'pause') { pushLog('info', '已请求暂停'); return send('pause'); }
-      if (action === 'resume') { pushLog('info', '已请求继续'); return send('resume'); }
+      if (action === 'pause') {
+        pushLog('info', '已请求暂停');
+        return send('pause');
+      }
+      if (action === 'resume') {
+        pushLog('info', '已请求继续');
+        return send('resume');
+      }
       if (action === 'restart') {
         pushLog('info', '正在重启后台…');
-        wantRunning = true; quitting = false; crashTimes = [];
-        if (!child) { spawnWorker(); send('start'); return true; }
+        wantRunning = true;
+        quitting = false;
+        crashTimes = [];
+        if (!child) {
+          spawnWorker();
+          send('start');
+          return true;
+        }
         return send('restart');
       }
       if (action === 'quit') {
-        quitting = true; wantRunning = false;
+        quitting = true;
+        wantRunning = false;
         clearTimeout(reviveTimer);
         pushLog('info', '正在退出后台…');
         const c = child;
         send('quit');
-        setTimeout(() => { try { if (c) c.kill(); } catch {} }, 6000);
+        setTimeout(() => {
+          try {
+            if (c) c.kill();
+          } catch {}
+        }, 6000);
         return true;
       }
       if (action === 'settings') return send('settings', data);
@@ -166,10 +223,15 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
       return Promise.race([readyWait, new Promise((r) => setTimeout(r, 60000))]);
     },
     stop() {
-      quitting = true; wantRunning = false;
+      quitting = true;
+      wantRunning = false;
       clearTimeout(reviveTimer);
-      try { if (child) child.kill(); } catch {}
-      child = null; ready = false; queue = [];
+      try {
+        if (child) child.kill();
+      } catch {}
+      child = null;
+      ready = false;
+      queue = [];
     },
   };
 }

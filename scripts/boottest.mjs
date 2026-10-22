@@ -5,26 +5,39 @@ import { chromium } from 'playwright';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const p = spawn(process.execPath, ['server/index.mjs', '--port', '8792'], { cwd: process.cwd() });
 let url = '';
-p.stdout.on('data', (d) => { const m = String(d).match(/http:\/\/127\.0\.0\.1:8792\/\?t=[0-9a-f]+/); if (m) url = m[0]; });
+p.stdout.on('data', (d) => {
+  const m = String(d).match(/http:\/\/127\.0\.0\.1:8792\/\?t=[0-9a-f]+/);
+  if (m) url = m[0];
+});
 p.stderr.on('data', (d) => process.stdout.write('[srv] ' + String(d).slice(0, 200) + '\n'));
 
 for (let i = 0; i < 40 && !url; i++) await sleep(500);
-if (!url) { console.log('FAIL 服务没起来'); process.exit(1); }
+if (!url) {
+  console.log('FAIL 服务没起来');
+  process.exit(1);
+}
 const token = new URL(url).searchParams.get('t');
 const base = 'http://127.0.0.1:8792';
 const api = async (path, body) => {
-  const r = await fetch(base + path + '?t=' + token, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const r = await fetch(
+    base + path + '?t=' + token,
+    body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}
+  );
   return r.json();
 };
 
 console.log('点击开始听课…');
 console.log(await api('/api/start', {}));
 
-let phase = '', st = null;
+let phase = '',
+  st = null;
 const t0 = Date.now();
 while (Date.now() - t0 < 75000) {
   st = await api('/api/state');
-  if (st.phase !== phase) { phase = st.phase; console.log('  phase ->', phase, st.loginHint || st.notice || ''); }
+  if (st.phase !== phase) {
+    phase = st.phase;
+    console.log('  phase ->', phase, st.loginHint || st.notice || '');
+  }
   if (phase === 'WAIT_LOGIN') break;
   if (phase === 'STOPPED') break;
   await sleep(1500);

@@ -58,7 +58,9 @@ export function saveCookies(dataDir, cookies) {
     fs.writeFileSync(tmp, JSON.stringify({ savedAt: Date.now(), cookies: list }, null, 1));
     fs.renameSync(tmp, file);
     return list.length;
-  } catch { return 0; }
+  } catch {
+    return 0;
+  }
 }
 
 /** 读出可用的登录态；过期的不返回（失败返回 []） */
@@ -67,5 +69,7 @@ export function loadCookies(dataDir, nowSec = Math.floor(Date.now() / 1000)) {
     const raw = JSON.parse(fs.readFileSync(cookiesPath(dataDir), 'utf8'));
     const list = Array.isArray(raw.cookies) ? raw.cookies : [];
     return list.filter((c) => c && c.name && c.value && (!c.expires || c.expires > nowSec + 60));
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }

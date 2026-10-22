@@ -7,6 +7,8 @@ const props = defineProps({
   busy: { type: String, default: '' },
   isIdle: { type: Boolean, default: false },
   isStopped: { type: Boolean, default: false },
+  /* true = 交给外层页面滚动（选课页全量展示），false = 卡片内自己滚（总览一屏） */
+  autoHeight: { type: Boolean, default: false },
 });
 const emit = defineEmits(['pick']);
 
@@ -15,7 +17,10 @@ const groups = computed(() => {
   for (const l of props.lessons || []) {
     const name = l.chapter || '未分章';
     let g = out.find((x) => x.name === name);
-    if (!g) { g = { name, items: [], done: 0 }; out.push(g); }
+    if (!g) {
+      g = { name, items: [], done: 0 };
+      out.push(g);
+    }
     g.items.push(l);
     if (l.done) g.done += 1;
   }
@@ -40,7 +45,9 @@ onMounted(() => {
     ro.observe(box.value);
   }
 });
-onBeforeUnmount(() => { if (ro) ro.disconnect(); });
+onBeforeUnmount(() => {
+  if (ro) ro.disconnect();
+});
 
 const buckets = computed(() => {
   const n = Math.max(1, cols.value);
@@ -83,17 +90,27 @@ watch(
 <template>
   <div v-if="!lessons || !lessons.length" class="empty-line">进入视频页后会自动读取课程目录</div>
   <div
-    v-else ref="box" class="ltree"
-    :style="{ gridTemplateColumns: 'repeat(' + cols + ',minmax(0,1fr))' }">
+    v-else
+    ref="box"
+    class="ltree"
+    :class="{ full: autoHeight }"
+    :style="{ gridTemplateColumns: 'repeat(' + cols + ',minmax(0,1fr))' }"
+  >
     <div v-for="(col, ci) in buckets" :key="ci" class="lcol">
       <div v-for="g in col" :key="g.name" class="lgroup">
-        <div class="gname"><b>{{ g.name }}</b><span>{{ g.done }}/{{ g.items.length }}</span></div>
+        <div class="gname">
+          <b>{{ g.name }}</b
+          ><span>{{ g.done }}/{{ g.items.length }}</span>
+        </div>
         <button
-          v-for="l in g.items" :key="l.code" class="lrow"
+          v-for="l in g.items"
+          :key="l.code"
+          class="lrow"
           :class="{ cur: l.current, done: l.done }"
           :disabled="!!busy || l.current || isStopped || isIdle"
           :title="l.code + ' ' + l.name"
-          @click="emit('pick', l)">
+          @click="emit('pick', l)"
+        >
           <span class="lcode">{{ l.code }}</span>
           <span class="lname">{{ l.name }}</span>
           <span class="lstat">{{ lessonStat(l) }}</span>

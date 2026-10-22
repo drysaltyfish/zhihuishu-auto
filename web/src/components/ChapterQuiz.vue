@@ -27,7 +27,7 @@ const stepText = computed(() => {
 });
 const progressStyle = computed(() => {
   const q = quiz.value;
-  const v = q && q.n ? (q.i || 0) / q.n * 100 : null;
+  const v = q && q.n ? ((q.i || 0) / q.n) * 100 : null;
   return { width: barW(v) };
 });
 // mock 给的题型带【】，真实引擎给「单选题」：两种都能显示
@@ -72,7 +72,9 @@ async function doNow(row) {
   }
 }
 
-function isTodo(row) { return (row.status || 'todo') === 'todo'; }
+function isTodo(row) {
+  return (row.status || 'todo') === 'todo';
+}
 
 function tagText(row) {
   const st = row.status || 'todo';
@@ -109,8 +111,13 @@ function metaText(row) {
       <span class="ctitle">章节测试</span>
       <div class="qauto">
         <span class="cmeta">自动做章节测试</span>
-        <button class="switch" :class="{ on: auto }" :disabled="!S"
-          :title="auto ? '关掉后不会自动做章节测试' : '打开后每章看完自动做平时测试'" @click="toggleAuto">
+        <button
+          class="switch"
+          :class="{ on: auto }"
+          :disabled="!S"
+          :title="auto ? '关掉后不会自动做章节测试' : '打开后每章看完自动做平时测试'"
+          @click="toggleAuto"
+        >
           <span class="knob"></span>
         </button>
       </div>
@@ -118,12 +125,13 @@ function metaText(row) {
 
     <template v-if="running">
       <div class="qprog">
-        <span class="small" style="color:#d5dfee">正在做 {{ titleShow }}</span>
+        <span class="small" style="color: #d5dfee">正在做 {{ titleShow }}</span>
         <span class="cmeta">{{ stepText }}</span>
       </div>
       <div class="qbar"><div class="qbarfill" :style="progressStyle"></div></div>
       <div v-if="last" class="qlast">
-        第 {{ last.num }} 题{{ typeText }}<template v-if="chosenText">选了 {{ chosenText }} · </template><span :class="resultClass">{{ last.result || '未知' }}</span>
+        第 {{ last.num }} 题{{ typeText }}<template v-if="chosenText">选了 {{ chosenText }} · </template
+        ><span :class="resultClass">{{ last.result || '未知' }}</span>
       </div>
     </template>
 
@@ -136,16 +144,22 @@ function metaText(row) {
           <div class="qmeta">{{ metaText(row) }}</div>
         </div>
         <button
-          v-if="isTodo(row)" class="btn mini"
+          v-if="isTodo(row)"
+          class="btn mini"
           :disabled="!!busyKey.v"
           :title="'现在做「' + (row.title || row.chapter || row.key) + '」'"
-          @click="doNow(row)">
+          @click="doNow(row)"
+        >
           {{ busyKey.v === row.key ? '启动中…' : '现在做' }}
         </button>
-        <span v-else class="qtag" :class="row.status" :title="(row.status === 'failed' && row.note) || ''">{{ tagText(row) }}</span>
+        <span v-else class="qtag" :class="row.status" :title="(row.status === 'failed' && row.note) || ''">{{
+          tagText(row)
+        }}</span>
       </li>
     </ul>
 
-    <div class="qfoot">已交 {{ doneCount }}/{{ list.length }} 章 · 每章视频全部看完后自动做该章平时测试，答完自动交卷；不碰期末。</div>
+    <div class="qfoot">
+      已交 {{ doneCount }}/{{ list.length }} 章 · 每章视频全部看完后自动做该章平时测试，答完自动交卷；不碰期末。
+    </div>
   </section>
 </template>

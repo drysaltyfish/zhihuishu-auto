@@ -6,7 +6,7 @@ export function createHub({ getState, getLogs, log, stateDelayMs = 60, logsDelay
   const clients = new Set();
   let stateTimer = null;
   let logsTimer = null;
-  let lastState = null;   // 上次推出去的 JSON 串，用来去重
+  let lastState = null; // 上次推出去的 JSON 串，用来去重
   let lastLogsSig = '';
 
   function frame(event, payloadJson) {
@@ -14,7 +14,11 @@ export function createHub({ getState, getLogs, log, stateDelayMs = 60, logsDelay
   }
 
   function write(res, text) {
-    try { res.write(text); } catch { drop(res); }
+    try {
+      res.write(text);
+    } catch {
+      drop(res);
+    }
   }
 
   function drop(res) {
@@ -29,7 +33,9 @@ export function createHub({ getState, getLogs, log, stateDelayMs = 60, logsDelay
 
   function pushState() {
     let body;
-    try { body = JSON.stringify(getState()); } catch (e) {
+    try {
+      body = JSON.stringify(getState());
+    } catch (e) {
       if (log) log('err', '状态序列化失败：' + String((e && e.message) || e).slice(0, 120));
       return;
     }
@@ -45,7 +51,9 @@ export function createHub({ getState, getLogs, log, stateDelayMs = 60, logsDelay
     if (sig === lastLogsSig) return;
     lastLogsSig = sig;
     let body;
-    try { body = JSON.stringify(rows); } catch (e) {
+    try {
+      body = JSON.stringify(rows);
+    } catch (e) {
       if (log) log('warn', '日志序列化失败：' + String((e && e.message) || e).slice(0, 120));
       return;
     }
@@ -66,23 +74,44 @@ export function createHub({ getState, getLogs, log, stateDelayMs = 60, logsDelay
       res.on('error', () => drop(res));
       req.on('close', () => drop(res));
       // 首帧只发给这个连接（其它连接早就有了，不重复打扰）
-      try { write(res, frame('state', JSON.stringify(getState()))); } catch { drop(res); }
-      try { write(res, frame('logs', JSON.stringify(getLogs() || []))); } catch { drop(res); }
+      try {
+        write(res, frame('state', JSON.stringify(getState())));
+      } catch {
+        drop(res);
+      }
+      try {
+        write(res, frame('logs', JSON.stringify(getLogs() || [])));
+      } catch {
+        drop(res);
+      }
     },
     stateChanged() {
       if (stateTimer) return;
-      stateTimer = setTimeout(() => { stateTimer = null; pushState(); }, stateDelayMs);
+      stateTimer = setTimeout(() => {
+        stateTimer = null;
+        pushState();
+      }, stateDelayMs);
     },
     logsChanged() {
       if (logsTimer) return;
-      logsTimer = setTimeout(() => { logsTimer = null; pushLogs(); }, logsDelayMs);
+      logsTimer = setTimeout(() => {
+        logsTimer = null;
+        pushLogs();
+      }, logsDelayMs);
     },
-    get clientCount() { return clients.size; },
+    get clientCount() {
+      return clients.size;
+    },
     stop() {
       if (stateTimer) clearTimeout(stateTimer);
       if (logsTimer) clearTimeout(logsTimer);
-      stateTimer = null; logsTimer = null;
-      for (const res of clients) { try { res.end(); } catch {} }
+      stateTimer = null;
+      logsTimer = null;
+      for (const res of clients) {
+        try {
+          res.end();
+        } catch {}
+      }
       clients.clear();
     },
   };

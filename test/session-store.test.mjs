@@ -8,11 +8,14 @@ import { pickCookies, saveCookies, loadCookies, cookiesPath } from '../server/wo
 const NOW = 1_700_000_000;
 
 test('pickCookies 只保留智慧树域，会话 Cookie 补 7 天过期', () => {
-  const list = pickCookies([
-    { name: 'CASLOGC', value: 'v1', domain: '.zhihuishu.com', path: '/', expires: -1, httpOnly: true, secure: true },
-    { name: 'other', value: 'x', domain: '.example.com', path: '/' },
-    { name: 'empty', value: '', domain: '.zhihuishu.com' },
-  ], NOW);
+  const list = pickCookies(
+    [
+      { name: 'CASLOGC', value: 'v1', domain: '.zhihuishu.com', path: '/', expires: -1, httpOnly: true, secure: true },
+      { name: 'other', value: 'x', domain: '.example.com', path: '/' },
+      { name: 'empty', value: '', domain: '.zhihuishu.com' },
+    ],
+    NOW
+  );
   assert.equal(list.length, 1);
   assert.equal(list[0].name, 'CASLOGC');
   assert.equal(list[0].expires, NOW + 7 * 86400);
@@ -43,11 +46,19 @@ test('saveCookies / loadCookies 往返，空列表不落盘', () => {
 
 test('loadCookies 跳过过期与坏文件', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zhs-ck2-'));
-  fs.writeFileSync(cookiesPath(dir), JSON.stringify({ cookies: [
-    { name: 'old', value: '1', domain: '.zhihuishu.com', expires: 100 },
-    { name: 'ok', value: '2', domain: '.zhihuishu.com', expires: NOW + 9999 },
-  ] }));
-  assert.deepEqual(loadCookies(dir, NOW).map((c) => c.name), ['ok']);
+  fs.writeFileSync(
+    cookiesPath(dir),
+    JSON.stringify({
+      cookies: [
+        { name: 'old', value: '1', domain: '.zhihuishu.com', expires: 100 },
+        { name: 'ok', value: '2', domain: '.zhihuishu.com', expires: NOW + 9999 },
+      ],
+    })
+  );
+  assert.deepEqual(
+    loadCookies(dir, NOW).map((c) => c.name),
+    ['ok']
+  );
   fs.writeFileSync(cookiesPath(dir), '{not json');
   assert.deepEqual(loadCookies(dir, NOW), []);
 });

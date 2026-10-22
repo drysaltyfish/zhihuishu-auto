@@ -29,20 +29,22 @@ export const QUIZ_PAPER = () => {
   const questions = subjects.map((el, idx) => {
     const numText = txt(el.querySelector('.subject_num'));
     const numM = /(\d+)/.exec(numText);
-    const opts = Array.from(el.querySelectorAll('.nodeLab')).map((lab) => {
-      const input = lab.querySelector('input[type=radio], input[type=checkbox]');
-      const label = txt(lab.querySelector('.ABCase'));
-      const text = txt(lab.querySelector('.node_detail')) || txt(lab);
-      return {
-        label: label.replace(/\.$/, ''),
-        text: text.replace(/^[A-H]\s*[.、]\s*/, '').slice(0, 600),
-        // 智慧树选中状态不用原生 checked：点选后给 .ABCase / .node_detail 加 onChecked，
-        // 并把 img.flagChecked 换成选中图。只读 input.checked 会永远 false（2026-10-22 实测）。
-        checked: (input ? !!input.checked : false) || !!lab.querySelector('.onChecked'),
-        inputType: input ? String(input.type || '') : '',
-        value: input ? String(input.value || '') : '',
-      };
-    }).filter((o) => o.text || o.label);
+    const opts = Array.from(el.querySelectorAll('.nodeLab'))
+      .map((lab) => {
+        const input = lab.querySelector('input[type=radio], input[type=checkbox]');
+        const label = txt(lab.querySelector('.ABCase'));
+        const text = txt(lab.querySelector('.node_detail')) || txt(lab);
+        return {
+          label: label.replace(/\.$/, ''),
+          text: text.replace(/^[A-H]\s*[.、]\s*/, '').slice(0, 600),
+          // 智慧树选中状态不用原生 checked：点选后给 .ABCase / .node_detail 加 onChecked，
+          // 并把 img.flagChecked 换成选中图。只读 input.checked 会永远 false（2026-10-22 实测）。
+          checked: (input ? !!input.checked : false) || !!lab.querySelector('.onChecked'),
+          inputType: input ? String(input.type || '') : '',
+          value: input ? String(input.value || '') : '',
+        };
+      })
+      .filter((o) => o.text || o.label);
     return {
       index: idx,
       num: numM ? Number(numM[1]) : idx + 1,
@@ -53,13 +55,21 @@ export const QUIZ_PAPER = () => {
     };
   });
 
-  const card = Array.from(document.querySelectorAll('ul.answerCard_list1 > li, ul.answerCard_list > li')).map((li, i) => {
-    const cls = String(li.className || '');
-    return { index: i + 1, cls: cls.slice(0, 60), done: /green|done|active_?green|complete/i.test(cls), text: txt(li).slice(0, 12) };
-  });
+  const card = Array.from(document.querySelectorAll('ul.answerCard_list1 > li, ul.answerCard_list > li')).map(
+    (li, i) => {
+      const cls = String(li.className || '');
+      return {
+        index: i + 1,
+        cls: cls.slice(0, 60),
+        done: /green|done|active_?green|complete/i.test(cls),
+        text: txt(li).slice(0, 12),
+      };
+    }
+  );
 
   const btnTexts = Array.from(document.querySelectorAll('button, .switch-btn-box *, .operateBtn_box *'))
-    .map((e) => txt(e)).filter((t) => t && t.length <= 12);
+    .map((e) => txt(e))
+    .filter((t) => t && t.length <= 12);
 
   const bodyAll = document.body ? document.body.innerText : '';
   const hasSubmit = /提交作业/.test(bodyAll);

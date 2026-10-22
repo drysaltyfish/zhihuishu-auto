@@ -52,9 +52,8 @@ export const INITIAL_MEM = Object.freeze({
   lastPhase: 'PLAYING',
 });
 
-const ENDED_NOTICE = (autoAdvance) => (autoAdvance
-  ? '本节已播完，没找到能自动切过去的下一节'
-  : '本节播完了；自动跳节是关的，请在课程目录里选下一节');
+const ENDED_NOTICE = (autoAdvance) =>
+  autoAdvance ? '本节已播完，没找到能自动切过去的下一节' : '本节播完了；自动跳节是关的，请在课程目录里选下一节';
 
 /**
  * 一次决策。
@@ -109,13 +108,19 @@ export function decide(obs, mem, cfg) {
       progress: { watchedSec: Math.round(v.ct), taskPointPct: pct },
       summary: { section: { pct, watched: Math.round(v.ct), total: Math.round(v.dur) } },
     });
-    if (!mem.pageInfoDumped) { mem.pageInfoDumped = true; effect({ type: 'readCourseInfo' }); }
+    if (!mem.pageInfoDumped) {
+      mem.pageInfoDumped = true;
+      effect({ type: 'readCourseInfo' });
+    }
 
     if (v.ended || atEnd) {
       flow = 'ended';
       if (!mem.endedLogged) {
         mem.endedLogged = true;
-        push('warn', (v.ended ? '本节视频播完了' : '视频停在结尾（已到 100% 但没触发 ended）') + '，看看有没有下一节可切');
+        push(
+          'warn',
+          (v.ended ? '本节视频播完了' : '视频停在结尾（已到 100% 但没触发 ended）') + '，看看有没有下一节可切'
+        );
         effect({ type: 'shot', name: 'ended-' + Date.now() + '.png' });
         if (!cfg.userPaused) {
           effect({
@@ -132,7 +137,10 @@ export function decide(obs, mem, cfg) {
     } else if (v.paused && !dialog.visible) {
       flow = 'stalled';
       mem.stallTicks++;
-      if (mem.stallTicks >= 3) { effect({ type: 'ensurePlaying' }); mem.stallTicks = 0; }
+      if (mem.stallTicks >= 3) {
+        effect({ type: 'ensurePlaying' });
+        mem.stallTicks = 0;
+      }
       // 兜底：暂停且进度长期不动，别无声僵死（每秒一条会刷屏，所以每 60 秒才喊一次）
       mem.frozenTicks = Math.abs(v.ct - mem.frozenCt) < 0.5 ? mem.frozenTicks + 1 : 0;
       mem.frozenCt = v.ct;
@@ -151,7 +159,10 @@ export function decide(obs, mem, cfg) {
       mem.stallTicks = 0;
       mem.frozenTicks = 0;
       mem.frozenCt = -1;
-      if (mem.lastPhase !== 'PLAYING') { patch({ phase: 'PLAYING' }); mem.lastPhase = 'PLAYING'; }
+      if (mem.lastPhase !== 'PLAYING') {
+        patch({ phase: 'PLAYING' });
+        mem.lastPhase = 'PLAYING';
+      }
       if (!cfg.userPaused && !dialog.visible) effect({ type: 'advance', force: false });
     }
   }

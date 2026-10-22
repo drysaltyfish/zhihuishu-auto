@@ -26,15 +26,14 @@ export function buildQuizPrompt(meta, q) {
     .map((o, i) => (o.label ? o.label + '.' : QUIZ_LETTERS[i] + '.') + ' ' + String(o.text || '').trim())
     .join('\n');
   const type = normalizeType(q && q.type);
-  const rule = type === 'multi'
-    ? '这是多选题，可能有一个或多个正确答案；请输出所有正确选项的字母，例如 AC。'
-    : type === 'judge'
-      ? '这是判断题，只输出一个字母：A（对）或 B（错）。'
-      : '这是单选题，只输出一个正确选项的字母。';
+  const rule =
+    type === 'multi'
+      ? '这是多选题，可能有一个或多个正确答案；请输出所有正确选项的字母，例如 AC。'
+      : type === 'judge'
+        ? '这是判断题，只输出一个字母：A（对）或 B（错）。'
+        : '这是单选题，只输出一个正确选项的字母。';
   const stem = String((q && q.stem) || '').trim();
-  const stemLine = stem
-    ? '题干：' + stem
-    : '（这道题页面上没有单独显示题干，请直接判断哪个选项的陈述是正确的。）';
+  const stemLine = stem ? '题干：' + stem : '（这道题页面上没有单独显示题干，请直接判断哪个选项的陈述是正确的。）';
   return [
     '你在帮一个学生做大学课程的章节平时测试。' + rule,
     '只回复选项字母，不要解释、不要复述题目。',
@@ -76,7 +75,9 @@ export function parseLetters(text, count) {
   }
   // 全文只有一个选项字母
   if (!out.length) {
-    const all = [...new Set((s.match(/\b[A-Ha-h]\b/g) || []).map((x) => x.toUpperCase()))].filter((c) => valid.includes(c));
+    const all = [...new Set((s.match(/\b[A-Ha-h]\b/g) || []).map((x) => x.toUpperCase()))].filter((c) =>
+      valid.includes(c)
+    );
     if (all.length === 1) push(all[0]);
   }
   return out;
@@ -163,7 +164,9 @@ export function pickChapterToQuiz(chapters, quizzes, currentChapter) {
     const q = (quizzes || []).find((x) => x.key === k);
     return q ? q.status : 'todo';
   };
-  const pending = (chapters || []).filter((c) => c.allDone && !['done', 'doing', 'skipped', 'failed'].includes(statusOf(c.key)));
+  const pending = (chapters || []).filter(
+    (c) => c.allDone && !['done', 'doing', 'skipped', 'failed'].includes(statusOf(c.key))
+  );
   if (!pending.length) return null;
   const cur = pending.find((c) => c.key === currentChapter);
   return cur || pending[0];
@@ -192,14 +195,14 @@ export function quizListOf(chapters, doneMap, platformDone) {
       key: c.key,
       chapter: c.chapter || c.key,
       title: d.title || guessTitle,
-      status: byPlatform ? 'done' : (d.status || 'todo'),
-      source: byPlatform ? 'platform' : (d.status ? 'self' : ''),
+      status: byPlatform ? 'done' : d.status || 'todo',
+      source: byPlatform ? 'platform' : d.status ? 'self' : '',
       count: d.count == null ? null : d.count,
       total: d.total == null ? null : d.total,
       score: d.score == null ? null : d.score,
       answered: d.answered || 0,
       at: d.at || 0,
-      note: byPlatform ? (d.note || '平台显示这份测试已经交过') : (d.note || ''),
+      note: byPlatform ? d.note || '平台显示这份测试已经交过' : d.note || '',
     };
   });
 }
@@ -216,7 +219,12 @@ export function parsePaperMeta(bodyText, fallbackTitle) {
   const capM = /对应章节\s*[：:\s]*([^\n]{1,40})/.exec(t);
   const titleM = /([\u4e00-\u9fa5A-Za-z0-9]{2,30}(?:单元测试|平时测验|平时测试|章节测试|测验|测试))/.exec(t);
   return {
-    title: (titleM && titleM[1]) || String(fallbackTitle || '').replace(/[-_].*$/, '').slice(0, 40) || '章节测试',
+    title:
+      (titleM && titleM[1]) ||
+      String(fallbackTitle || '')
+        .replace(/[-_].*$/, '')
+        .slice(0, 40) ||
+      '章节测试',
     chapter: capM ? capM[1].trim() : '',
     count: count || null,
     total: total || null,

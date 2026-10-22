@@ -5,7 +5,9 @@ import { runLlmCheck, SAMPLE_CHECK } from '../server/lib/llm-check.mjs';
 const LLM = { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', apiKey: 'sk-x' };
 
 test('模型选对样题 → ok', async () => {
-  const r = await runLlmCheck(LLM, { ask: async () => ({ ok: true, idx: SAMPLE_CHECK.answerIdx, letter: 'B', ms: 321, raw: 'B' }) });
+  const r = await runLlmCheck(LLM, {
+    ask: async () => ({ ok: true, idx: SAMPLE_CHECK.answerIdx, letter: 'B', ms: 321, raw: 'B' }),
+  });
   assert.equal(r.ok, true);
   assert.equal(r.letter, 'B');
   assert.equal(r.model, 'deepseek-chat');
@@ -41,7 +43,12 @@ test('没传 llm 配置时 model 为空串', async () => {
 
 test('把题面和选项原样交给模型', async () => {
   let seen = null;
-  await runLlmCheck(LLM, { ask: async (llm, payload) => { seen = { llm, payload }; return { ok: true, idx: 1 }; } });
+  await runLlmCheck(LLM, {
+    ask: async (llm, payload) => {
+      seen = { llm, payload };
+      return { ok: true, idx: 1 };
+    },
+  });
   assert.equal(seen.llm.model, 'deepseek-chat');
   assert.equal(seen.payload.question, SAMPLE_CHECK.question);
   assert.equal(seen.payload.options.length, 4);

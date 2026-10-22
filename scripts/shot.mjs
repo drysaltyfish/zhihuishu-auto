@@ -5,7 +5,9 @@ const name = process.argv[2] || 'docs/ui-preview.png';
 const wait = Number(process.argv[3] || 2500);
 const b = await chromium.launch({ channel: 'chrome', headless: true });
 const p = await b.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
-await p.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch((e) => console.log('goto', String(e).slice(0, 200)));
+await p
+  .goto(url, { waitUntil: 'networkidle', timeout: 30000 })
+  .catch((e) => console.log('goto', String(e).slice(0, 200)));
 await p.waitForTimeout(wait);
 await p.screenshot({ path: name });
 await b.close();

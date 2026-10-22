@@ -5,3 +5,7 @@ docs/*.png
 spike/logs/
 spike/data/
 research/tmp/
+# 打包相关
+browsers/
+release/
+dist/

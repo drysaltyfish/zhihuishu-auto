@@ -2,7 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { computeNextQuestion, etaText } from '../web/src/domain/next-question.js';
 
-const point = (timeSec, extra = {}) => ({ timeSec, questionIds: 'q' + timeSec, answered: false, state: 'next', ...extra });
+const point = (timeSec, extra = {}) => ({
+  timeSec,
+  questionIds: 'q' + timeSec,
+  answered: false,
+  state: 'next',
+  ...extra,
+});
 const state = (over = {}) => ({ video: { ct: 0 }, questionPoints: [], pointsLoaded: true, ...over });
 
 test('没有弹题点 → null', () => {
@@ -14,11 +20,7 @@ test('没有弹题点 → null', () => {
 test('已答 / state=done 的弹题点被过滤', () => {
   const s = state({
     video: { ct: 0 },
-    questionPoints: [
-      point(10, { answered: true }),
-      point(20, { state: 'done' }),
-      point(30),
-    ],
+    questionPoints: [point(10, { answered: true }), point(20, { state: 'done' }), point(30)],
   });
   const n = computeNextQuestion(s);
   assert.equal(n.atSec, 30);

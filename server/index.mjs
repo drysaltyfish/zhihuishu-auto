@@ -28,11 +28,24 @@ const PUBLIC = path.join(HERE, 'public');
 const DATA = process.env.ZHS_DATA ? path.resolve(process.env.ZHS_DATA) : path.join(ROOT, 'data');
 
 const argv = process.argv.slice(2);
-const argN = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
+const argN = (n, d) => {
+  const i = argv.indexOf('--' + n);
+  return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
+};
 const PORT = Number(argN('port', '8731'));
 const MOCK = argv.includes('--mock');
 const DEBUG = process.env.ZHS_DEBUG === '1';
 const TOKEN = crypto.randomBytes(12).toString('hex');
+// 版本号：打包版由 Electron 主进程通过 ZHS_APP_VERSION 传进来，开发态读 package.json
+const APP_VERSION =
+  process.env.ZHS_APP_VERSION ||
+  (() => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version || '0.0.0';
+    } catch {
+      return '0.0.0';
+    }
+  })();
 
 fs.mkdirSync(DATA, { recursive: true });
 
@@ -54,9 +67,13 @@ const engine = MOCK
 hub = createHub({ getState: () => state, getLogs: logs.list, log: logs.push });
 
 /* ---------------- 接口实现 ---------------- */
-function openEvents({ req, res }) { hub.addClient(req, res); }
+function openEvents({ req, res }) {
+  hub.addClient(req, res);
+}
 
-function getState({ res }) { json(res, 200, state); }
+function getState({ res }) {
+  json(res, 200, state);
+}
 
 function startTask({ res }) {
   if (state.phase !== 'IDLE' && state.phase !== 'STOPPED') throw httpError(409, '任务已经在运行了');
@@ -64,11 +81,16 @@ function startTask({ res }) {
   hub.stateChanged();
   engine.start();
   // worker 真正 ready 后再把当前开关推过去（不再赌 1.5 秒；崩溃恢复后也会补上）
-  engine.ready().then(() => engine.control('settings', {
-    autoAnswer: state.answers.auto,
-    autoAdvance: state.answers.advance,
-    quizAuto: state.quizAuto,
-  })).catch((e) => logs.push('warn', '推送开关失败：' + String((e && e.message) || e).slice(0, 120)));
+  engine
+    .ready()
+    .then(() =>
+      engine.control('settings', {
+        autoAnswer: state.answers.auto,
+        autoAdvance: state.answers.advance,
+        quizAuto: state.quizAuto,
+      })
+    )
+    .catch((e) => logs.push('warn', '推送开关失败：' + String((e && e.message) || e).slice(0, 120)));
   json(res, 200, { ok: true });
 }
 
@@ -78,7 +100,10 @@ function controlTask({ res, body }) {
   if (!r.ok) throw httpError(r.status, r.message, r.hint);
   engine.control(name, body.data);
   const patch = actionPatch(name);
-  if (patch) { applyPatch(state, patch); hub.stateChanged(); }
+  if (patch) {
+    applyPatch(state, patch);
+    hub.stateChanged();
+  }
   json(res, 200, { ok: true });
 }
 
@@ -99,7 +124,10 @@ function updateSettings({ res, body }) {
     applyPatch(state, { quizAuto: body.quizAuto });
     logs.push('info', body.quizAuto ? '已开启自动做章节测试' : '已关闭自动做章节测试（仍可在面板里手动点）');
   }
-  if (Object.keys(out).length) { engine.control('settings', out); hub.stateChanged(); }
+  if (Object.keys(out).length) {
+    engine.control('settings', out);
+    hub.stateChanged();
+  }
   json(res, 200, { ok: true });
 }
 
@@ -107,7 +135,9 @@ async function llmCheck({ res }) {
   const r = await runLlmCheck(config.llm());
   const detail = r.ok
     ? '选了 ' + r.letter + '（正确）'
-    : (r.letter ? '选了 ' + r.letter + '（应为 ' + 'ABCDEFGH'[SAMPLE_CHECK.answerIdx] + '）' : r.why);
+    : r.letter
+      ? '选了 ' + r.letter + '（应为 ' + 'ABCDEFGH'[SAMPLE_CHECK.answerIdx] + '）'
+      : r.why;
   logs.push(r.ok ? 'ok' : 'warn', '模型自检：' + detail + (r.ms ? ' · ' + r.ms + 'ms' : ''));
   json(res, 200, r);
 }
@@ -140,6 +170,91 @@ function pickLesson({ res, body }) {
   json(res, 200, { ok: true });
 }
 
+/* ---------------- 设置（LLM 配置） ---------------- */
+function getConfigOrSave(ctx) {
+  return ctx.req.method === 'PUT' ? saveConfig(ctx) : getConfig(ctx);
+}
+
+function configPayload() {
+  return { llm: config.redacted(), version: APP_VERSION };
+}
+
+function getConfig({ res }) {
+  json(res, 200, { ok: true, config: configPayload() });
+}
+
+function saveConfig({ res, body }) {
+  const raw = body && body.llm && typeof body.llm === 'object' ? body.llm : {};
+  const str = (v, name, max) => {
+    if (v === undefined || v === null) return '';
+    if (typeof v !== 'string') throw httpError(400, name + '格式不对', '请检查后重试');
+    const s = v.trim();
+    if (s.length > max) throw httpError(400, name + '太长了', '请检查后重试');
+    return s;
+  };
+  const llm = {
+    provider: str(raw.provider, '服务商', 40),
+    baseUrl: str(raw.baseUrl, '接口地址', 300),
+    model: str(raw.model, '模型名', 120),
+    apiKey: str(raw.apiKey, 'API Key', 300),
+    timeoutMs: raw.timeoutMs,
+  };
+  if (
+    !llm.apiKey &&
+    !llm.baseUrl &&
+    !llm.model &&
+    !llm.provider &&
+    raw.timeoutMs === undefined &&
+    body.clearKey !== true
+  ) {
+    throw httpError(400, '没有要保存的内容', '改一下至少一项再保存');
+  }
+  if (llm.apiKey && /[\r\n]/.test(llm.apiKey)) throw httpError(400, 'API Key 里不能有换行', '重新复制一次 Key 再粘贴');
+  if (llm.baseUrl) {
+    let ok = false;
+    try {
+      const u = new URL(llm.baseUrl);
+      ok = u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {}
+    if (!ok) throw httpError(400, '接口地址不对', '要填完整的 http(s) 地址，例如 https://api.deepseek.com');
+  }
+  if (llm.model && /\s/.test(llm.model)) throw httpError(400, '模型名里不能有空格', '例如 deepseek-chat');
+  if (raw.timeoutMs !== undefined && raw.timeoutMs !== null && raw.timeoutMs !== '') {
+    const n = Number(raw.timeoutMs);
+    if (!Number.isFinite(n) || n < 3000 || n > 180000)
+      throw httpError(400, '超时时间要在 3～180 秒之间', '一般 20 秒就够');
+    llm.timeoutMs = Math.round(n);
+  }
+  config.saveLlm({ ...llm, clearKey: body.clearKey === true });
+  const cfg = configPayload();
+  logs.push(
+    'info',
+    '设置已保存：' +
+      (cfg.llm.hasApiKey ? '已配置 API Key（' + cfg.llm.apiKeyMasked + '）' : '未配置 API Key') +
+      '，模型 ' +
+      cfg.llm.model
+  );
+  json(res, 200, { ok: true, config: cfg });
+}
+
+/* ---------------- 登录二维码（worker 截图写到 data/login-qr.png） ---------------- */
+function getQr({ res }) {
+  const file = path.join(DATA, 'login-qr.png');
+  let buf;
+  try {
+    buf = fs.readFileSync(file);
+  } catch {
+    return fail(res, 404, '还没有二维码', '正在打开登录页，稍等几秒再试');
+  }
+  if (!buf || !buf.length) return fail(res, 404, '二维码还没准备好', '稍等一下再刷新');
+  res.writeHead(200, {
+    'content-type': 'image/png',
+    'cache-control': 'no-store, no-cache, must-revalidate, max-age=0',
+    'content-length': buf.length,
+  });
+  res.end(buf);
+}
+
 /* ---------------- 路由表 ---------------- */
 const routes = [
   { path: '/api/events', methods: ['GET'], handler: openEvents },
@@ -147,6 +262,8 @@ const routes = [
   { path: '/api/start', methods: ['POST'], handler: startTask },
   { path: '/api/control', methods: ['POST'], handler: controlTask },
   { path: '/api/settings', methods: ['POST'], handler: updateSettings },
+  { path: '/api/config', methods: ['GET', 'PUT'], handler: getConfigOrSave },
+  { path: '/api/qr', methods: ['GET'], handler: getQr },
   { path: '/api/llmcheck', methods: ['GET'], handler: llmCheck },
   // 前端「刷新课程」用 POST、自检脚本用 GET，两种都收
   { path: '/api/courses', methods: ['GET', 'POST'], handler: readCourses },
@@ -164,8 +281,11 @@ const handleApi = createRouter({
 /* ---------------- HTTP ---------------- */
 const server = http.createServer(async (req, res) => {
   let url;
-  try { url = new URL(req.url, 'http://127.0.0.1'); }
-  catch { return fail(res, 400, '请求地址不对'); }
+  try {
+    url = new URL(req.url, 'http://127.0.0.1');
+  } catch {
+    return fail(res, 400, '请求地址不对');
+  }
 
   if (url.pathname.startsWith('/api/')) return handleApi(req, res, url);
 
@@ -174,17 +294,25 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     if (e && e.expose) return fail(res, e.status || 404, e.message, e.hint);
     logs.push('err', '静态文件读取失败：' + String((e && e.message) || e).slice(0, 160));
-    try { if (!res.headersSent) fail(res, 500, '服务出了一点问题，已记录，请重试'); } catch {}
+    try {
+      if (!res.headersSent) fail(res, 500, '服务出了一点问题，已记录，请重试');
+    } catch {}
   }
 });
 
 process.on('uncaughtException', (e) => logs.push('err', '未捕获异常：' + String((e && e.message) || e).slice(0, 160)));
 process.on('unhandledRejection', (e) => logs.push('err', '未处理拒绝：' + String((e && e.message) || e).slice(0, 160)));
-process.on('SIGINT', () => {
-  try { engine.stop(); } catch {}
-  try { hub.stop(); } catch {}
+function shutdown() {
+  try {
+    engine.stop();
+  } catch {}
+  try {
+    hub.stop();
+  } catch {}
   process.exit(0);
-});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 if (!fs.existsSync(path.join(PUBLIC, 'index.html'))) logs.push('warn', '前端还没构建：请先执行 npm run web:build');
 
@@ -200,5 +328,7 @@ server.listen(PORT, '127.0.0.1', () => {
   const url = 'http://127.0.0.1:' + PORT + '/?t=' + TOKEN;
   console.log('\n  智慧树自动听课 · 本地服务已启动' + (MOCK ? '（mock）' : ''));
   console.log('  ' + url + '\n');
-  try { fs.writeFileSync(path.join(DATA, 'server.url'), url); } catch {}
+  try {
+    fs.writeFileSync(path.join(DATA, 'server.url'), url);
+  } catch {}
 });

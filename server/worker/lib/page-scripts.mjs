@@ -8,10 +8,17 @@
  */
 
 /** 弹题弹窗的候选选择器（页面里用 querySelector 逐个试） */
-export const DIALOG_BOX_CSS = '#playTopic-dialog, [class*="playTopic"], [class*="popupExam"], [class*="topicExam"], [class*="exam-dialog"]';
+export const DIALOG_BOX_CSS =
+  '#playTopic-dialog, [class*="playTopic"], [class*="popupExam"], [class*="topicExam"], [class*="exam-dialog"]';
 
 /** 视频播放/暂停键的候选选择器（按顺序试第一个可见的） */
-export const PLAY_BUTTON_CSS = ['.play-btn', '.vjs-big-play-button', '.prism-big-play-btn', '.controls-play', '.prism-play-btn'];
+export const PLAY_BUTTON_CSS = [
+  '.play-btn',
+  '.vjs-big-play-button',
+  '.prism-big-play-btn',
+  '.controls-play',
+  '.prism-play-btn',
+];
 
 /** 视频状态 + 页面状态（只读采样用） */
 export const VSTATE = () => {
@@ -38,8 +45,13 @@ export const PLAY_VIDEO = () => {
   vs.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);
   const v = vs[0];
   if (!v) return false;
-  try { v.muted = true; } catch {}
-  try { const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch {}
+  try {
+    v.muted = true;
+  } catch {}
+  try {
+    const p = v.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch {}
   return true;
 };
 
@@ -47,15 +59,31 @@ export const PLAY_VIDEO = () => {
 export const PAUSE_VIDEO = () => {
   const vs = Array.from(document.querySelectorAll('video'));
   vs.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);
-  if (vs[0]) { try { vs[0].pause(); } catch {} }
+  if (vs[0]) {
+    try {
+      vs[0].pause();
+    } catch {}
+  }
   return true;
 };
 
 /** 弹题弹窗的完整结构（含题面/选项/是否已作答/正确答案/分页） */
 export const DIALOG = () => {
-  const sels = ['#playTopic-dialog', '[class*="playTopic"]', '[class*="popupExam"]', '[class*="topicExam"]', '[class*="exam-dialog"]'];
+  const sels = [
+    '#playTopic-dialog',
+    '[class*="playTopic"]',
+    '[class*="popupExam"]',
+    '[class*="topicExam"]',
+    '[class*="exam-dialog"]',
+  ];
   let box = null;
-  for (const s of sels) { const e = document.querySelector(s); if (e) { box = e; break; } }
+  for (const s of sels) {
+    const e = document.querySelector(s);
+    if (e) {
+      box = e;
+      break;
+    }
+  }
   if (!box) return { visible: false };
   const s = getComputedStyle(box);
   if (s.display === 'none' || s.visibility === 'hidden' || +s.opacity === 0) return { visible: false };
@@ -63,16 +91,20 @@ export const DIALOG = () => {
   if (r.width < 120 || r.height < 60) return { visible: false };
 
   const lis = Array.from(box.querySelectorAll('ul.topic-list > li, ul.topic-list li'));
-  const options = lis.map((li) => {
-    const active = /active/.test(String(li.className)) || !!li.querySelector('.active');
-    const labelEl = li.querySelector('.topic-option-item');
-    const textEl = li.querySelector('.item-topic');
-    return {
-      label: labelEl ? (labelEl.innerText || '').replace(/\s+/g, ' ').trim() : '',
-      text: textEl ? (textEl.innerText || '').replace(/\s+/g, ' ').trim() : (li.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 400),
-      active,
-    };
-  }).filter((o) => o.text || o.label);
+  const options = lis
+    .map((li) => {
+      const active = /active/.test(String(li.className)) || !!li.querySelector('.active');
+      const labelEl = li.querySelector('.topic-option-item');
+      const textEl = li.querySelector('.item-topic');
+      return {
+        label: labelEl ? (labelEl.innerText || '').replace(/\s+/g, ' ').trim() : '',
+        text: textEl
+          ? (textEl.innerText || '').replace(/\s+/g, ' ').trim()
+          : (li.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 400),
+        active,
+      };
+    })
+    .filter((o) => o.text || o.label);
 
   const titleEl = box.querySelector('.topic-title');
   const typeEl = box.querySelector('.title-tit');
@@ -96,7 +128,7 @@ export const DIALOG = () => {
     options,
     optionCount: options.length,
     pages: pages.length,
-    pageIndex: activePage ? (activePage.innerText || '').trim() : (pages[0] || '1'),
+    pageIndex: activePage ? (activePage.innerText || '').trim() : pages[0] || '1',
     hasNextPage: !!(nextBtn && !nextBtn.disabled),
     hasClose: !!(closeBtn || headerBtn),
     closeText: closeBtn ? (closeBtn.innerText || '').replace(/\s+/g, ' ').trim() : '',
@@ -106,9 +138,21 @@ export const DIALOG = () => {
 
 /** 弹窗原始 HTML（排错存盘用） */
 export const DIALOG_HTML = () => {
-  const sels = ['#playTopic-dialog', '[class*="playTopic"]', '[class*="popupExam"]', '[class*="topicExam"]', '[class*="exam-dialog"]'];
+  const sels = [
+    '#playTopic-dialog',
+    '[class*="playTopic"]',
+    '[class*="popupExam"]',
+    '[class*="topicExam"]',
+    '[class*="exam-dialog"]',
+  ];
   let box = null;
-  for (const s of sels) { const e = document.querySelector(s); if (e) { box = e; break; } }
+  for (const s of sels) {
+    const e = document.querySelector(s);
+    if (e) {
+      box = e;
+      break;
+    }
+  }
   if (!box) return null;
   return { html: box.outerHTML.slice(0, 40000), frameUrl: location.href };
 };
@@ -117,7 +161,11 @@ export const DIALOG_HTML = () => {
 export const COURSE_TREE = () => {
   const txt = (e) => (e && (e.innerText || '').replace(/\s+/g, ' ').trim()) || '';
   const first = (sels) => {
-    for (const s of sels) { const e = document.querySelector(s); const t = txt(e); if (t && t.length < 80) return t; }
+    for (const s of sels) {
+      const e = document.querySelector(s);
+      const t = txt(e);
+      if (t && t.length < 80) return t;
+    }
     return '';
   };
   const out = [];
@@ -132,30 +180,41 @@ export const COURSE_TREE = () => {
       const t = txt(li);
       // b.finish = 这章的测试已经交过（平台课程树上有对勾）；没交过是
       // span.iconbaizhoumoshi-zhangceshi-shubiaoyiru（hover 图标）。
-      if (t) tests.push({
-        chapter: curChapter,
-        text: t.replace(/\s*\d{1,3}%\s*$/, '').trim(),
-        cls: cls.slice(0, 90),
-        done: !!li.querySelector('b.finish'),
-      });
+      if (t)
+        tests.push({
+          chapter: curChapter,
+          text: t.replace(/\s*\d{1,3}%\s*$/, '').trim(),
+          cls: cls.slice(0, 90),
+          done: !!li.querySelector('b.finish'),
+        });
       continue;
     }
-    if (/chapter/.test(cls) && !/video/.test(cls)) { curChapter = txt(li); continue; }
+    if (/chapter/.test(cls) && !/video/.test(cls)) {
+      curChapter = txt(li);
+      continue;
+    }
     if (!/video/.test(cls)) continue;
     const t = txt(li);
     if (!t) continue;
     const pctM = /(\d{1,3})%/.exec(t);
     const durM = /(\d{2}):(\d{2}):(\d{2})/.exec(t);
     const codeM = /^(\d+\.\d+)/.exec(t);
-    const icons = Array.from(li.querySelectorAll('i, em, b, span[class]')).map((x) => String(x.className || '')).filter(Boolean).slice(0, 8);
+    const icons = Array.from(li.querySelectorAll('i, em, b, span[class]'))
+      .map((x) => String(x.className || ''))
+      .filter(Boolean)
+      .slice(0, 8);
     const bar = li.querySelector('[role="progressbar"]');
     const barPct = bar && bar.getAttribute('aria-valuenow');
     const finished = !!li.querySelector('b.time_icofinish');
     const half = !!li.querySelector('b.time_ico_half');
     out.push({
       code: codeM ? codeM[1] : '',
-      name: t.replace(/^\d+\.\d+\s*/, '').replace(/\s*\d{1,3}%\s*/, ' ').replace(/\s*\d{2}:\d{2}:\d{2}\s*$/, '').trim(),
-      pct: barPct != null ? Number(barPct) : (pctM ? Number(pctM[1]) : null),
+      name: t
+        .replace(/^\d+\.\d+\s*/, '')
+        .replace(/\s*\d{1,3}%\s*/, ' ')
+        .replace(/\s*\d{2}:\d{2}:\d{2}\s*$/, '')
+        .trim(),
+      pct: barPct != null ? Number(barPct) : pctM ? Number(pctM[1]) : null,
       durText: durM ? durM[0] : '',
       durSec: durM ? Number(durM[1]) * 3600 + Number(durM[2]) * 60 + Number(durM[3]) : 0,
       current: /current_play/.test(cls),
@@ -164,7 +223,8 @@ export const COURSE_TREE = () => {
       icons,
       finished,
       half,
-      doneAttr: finished || /finish|complete|done|already|isLearn|learnd/i.test(cls) || !!li.querySelector('.el-icon-check'),
+      doneAttr:
+        finished || /finish|complete|done|already|isLearn|learnd/i.test(cls) || !!li.querySelector('.el-icon-check'),
       html: out.length < 3 ? li.outerHTML.slice(0, 600) : '',
     });
   }
@@ -182,7 +242,9 @@ export const COURSE_TREE = () => {
 
 /** 平台的反脚本提示（合成事件/自动化环境会触发） */
 export const ABNORMAL = () => {
-  const els = Array.from(document.querySelectorAll('.el-message-box, .el-dialog, .layui-layer, [class*="message-box"]'));
+  const els = Array.from(
+    document.querySelectorAll('.el-message-box, .el-dialog, .layui-layer, [class*="message-box"]')
+  );
   for (const e of els) {
     const t = (e.innerText || '').replace(/\s+/g, ' ');
     if (!((e.offsetWidth || 0) > 0 && (e.offsetHeight || 0) > 0)) continue;
@@ -201,7 +263,9 @@ export const VERIFY = () => {
     return b.bottom > 0 && b.right > 0 && b.top < vh && b.left < vw && b.top > -200;
   };
   const RE = /请完成安全验证|请完成验证|拖动滑块|按住滑块|请依次点击|点击.{0,8}验证/;
-  const boxes = document.querySelectorAll('.el-dialog__wrapper, .el-dialog, [class*="verify"], [class*="captcha"], [class*="yidun"], [class*="geetest"], [class*="nc_wrapper"], [class*="slide"], [id^="tcaptcha"]');
+  const boxes = document.querySelectorAll(
+    '.el-dialog__wrapper, .el-dialog, [class*="verify"], [class*="captcha"], [class*="yidun"], [class*="geetest"], [class*="nc_wrapper"], [class*="slide"], [id^="tcaptcha"]'
+  );
   for (const e of boxes) {
     if (!onScreen(e)) continue;
     const t = (e.innerText || '').replace(/\s+/g, ' ').trim();
@@ -212,7 +276,7 @@ export const VERIFY = () => {
     const src = (e.getAttribute('src') || '') + '';
     if (/captcha|verify|turing\./i.test(src)) return '验证码 iframe';
   }
-  const t = document.body ? (document.body.innerText || '') : '';
+  const t = document.body ? document.body.innerText || '' : '';
   if (/请完成安全验证|拖动滑块|按住滑块|请依次点击/.test(t)) return '页面出现安全验证';
   return '';
 };
@@ -243,4 +307,5 @@ export const COURSE_LIST = () => {
 };
 
 /** 课堂页面正文（排错用） */
-export const PAGE_TEXT = () => (document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 1200) : '');
+export const PAGE_TEXT = () =>
+  document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 1200) : '';

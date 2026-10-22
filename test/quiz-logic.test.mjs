@@ -1,8 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeType, buildQuizPrompt, parseLetters, chooseLetters, fallbackIdxs, planSelection,
-  groupChapters, pickChapterToQuiz, quizListOf, platformDoneMap, parsePaperMeta, parseResult, QUIZ_LETTERS,
+  normalizeType,
+  buildQuizPrompt,
+  parseLetters,
+  chooseLetters,
+  fallbackIdxs,
+  planSelection,
+  groupChapters,
+  pickChapterToQuiz,
+  quizListOf,
+  platformDoneMap,
+  parsePaperMeta,
+  parseResult,
+  QUIZ_LETTERS,
 } from '../server/worker/lib/quiz-logic.mjs';
 
 const q = (over = {}) => ({
@@ -60,7 +71,13 @@ test('parseLetters 认得「字母打头 + 解释」的回复', () => {
 test('chooseLetters 单选题/判断题只取第一个字母（模型多给时不误判多选）', () => {
   const r = chooseLetters({ text: '答案：B，C 不对', question: q(), optionCount: 4 });
   assert.deepEqual(r.idxs, [1]);
-  const judge = q({ type: '【判断题】', options: [{ label: 'A', text: '对' }, { label: 'B', text: '错' }] });
+  const judge = q({
+    type: '【判断题】',
+    options: [
+      { label: 'A', text: '对' },
+      { label: 'B', text: '错' },
+    ],
+  });
   assert.deepEqual(chooseLetters({ text: 'B，A 是错的', question: judge, optionCount: 2 }).idxs, [1]);
   const multi = chooseLetters({ text: '答案：A、C', question: q({ type: '【多选题】' }), optionCount: 4 });
   assert.deepEqual(multi.idxs, [0, 2]);
@@ -77,7 +94,13 @@ test('chooseLetters 单选题取字母', () => {
 });
 
 test('chooseLetters 判断题兼容「对/错」', () => {
-  const judge = q({ type: '【判断题】', options: [{ label: 'A', text: '对' }, { label: 'B', text: '错' }] });
+  const judge = q({
+    type: '【判断题】',
+    options: [
+      { label: 'A', text: '对' },
+      { label: 'B', text: '错' },
+    ],
+  });
   assert.deepEqual(chooseLetters({ text: '对', question: judge, optionCount: 2 }).idxs, [0]);
   assert.deepEqual(chooseLetters({ text: '错', question: judge, optionCount: 2 }).idxs, [1]);
   assert.deepEqual(chooseLetters({ text: 'A', question: judge, optionCount: 2 }).idxs, [0]);
@@ -94,9 +117,26 @@ test('chooseLetters 解析不出来时给空（交给兜底）', () => {
 
 test('fallbackIdxs 单选选最长、判断选「对」、排除「以上都不对」', () => {
   assert.deepEqual(fallbackIdxs(q()), [1]);
-  assert.deepEqual(fallbackIdxs(q({ type: '【判断题】', options: [{ label: 'A', text: '错' }, { label: 'B', text: '对' }] })), [1]);
+  assert.deepEqual(
+    fallbackIdxs(
+      q({
+        type: '【判断题】',
+        options: [
+          { label: 'A', text: '错' },
+          { label: 'B', text: '对' },
+        ],
+      })
+    ),
+    [1]
+  );
   assert.deepEqual(fallbackIdxs(q({ type: '【多选题】' })), [0]);
-  const noD = q({ options: [{ label: 'A', text: '以上都不对' }, { label: 'B', text: '短' }, { label: 'C', text: '长一些' }] });
+  const noD = q({
+    options: [
+      { label: 'A', text: '以上都不对' },
+      { label: 'B', text: '短' },
+      { label: 'C', text: '长一些' },
+    ],
+  });
   assert.deepEqual(fallbackIdxs(noD), [2]);
 });
 
@@ -131,7 +171,17 @@ test('pickChapterToQuiz 只挑全章看完且没做过的，优先当前章', ()
   ]);
   assert.equal(pickChapterToQuiz(chapters, [], '第二章').key, '第二章');
   assert.equal(pickChapterToQuiz(chapters, [{ key: '第二章', status: 'done' }], '第二章').key, '第一章');
-  assert.equal(pickChapterToQuiz(chapters, [{ key: '第一章', status: 'done' }, { key: '第二章', status: 'done' }], ''), null);
+  assert.equal(
+    pickChapterToQuiz(
+      chapters,
+      [
+        { key: '第一章', status: 'done' },
+        { key: '第二章', status: 'done' },
+      ],
+      ''
+    ),
+    null
+  );
   assert.equal(pickChapterToQuiz(chapters, [{ key: '第一章', status: 'failed' }], '第一章').key, '第二章');
 });
 
@@ -173,7 +223,11 @@ test('quizListOf 平台已交优先：本地没记录也显示 done/platform', (
   assert.equal(list2[0].source, 'self');
   assert.equal(list2[0].score, 10);
   // 自己刚交完、平台也打了勾：仍然是 self（不是「之前交的」）
-  const list3 = quizListOf(chapters, { '第一章 概述': { status: 'done', score: 10, total: 12 } }, { '第一章 概述': true });
+  const list3 = quizListOf(
+    chapters,
+    { '第一章 概述': { status: 'done', score: 10, total: 12 } },
+    { '第一章 概述': true }
+  );
   assert.equal(list3[0].source, 'self');
   assert.equal(list3[0].status, 'done');
 });
@@ -190,7 +244,7 @@ test('parsePaperMeta 从正文里读题数/总分/章节/标题', () => {
 test('parseResult 读得出得分与是否提交', () => {
   assert.deepEqual(
     { score: parseResult('提交成功 得分：12/12').score, total: parseResult('提交成功 得分：12/12').total },
-    { score: 12, total: 12 },
+    { score: 12, total: 12 }
   );
   assert.equal(parseResult('已提交，等待批阅').submitted, true);
   assert.equal(parseResult('已提交，等待批阅').score, null);

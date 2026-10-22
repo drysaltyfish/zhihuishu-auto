@@ -10,7 +10,9 @@ before(async () => {
   br = await chromium.launch({ headless: true, channel: 'chrome' });
   pg = await br.newPage();
 });
-after(async () => { await br.close(); });
+after(async () => {
+  await br.close();
+});
 
 const fixture = (name) => fs.readFileSync(new URL('./fixtures/' + name, import.meta.url), 'utf8');
 const load = (html) => pg.setContent('<!doctype html><html><body>' + html + '</body></html>');
@@ -58,18 +60,20 @@ test('DIALOG_HTML：返回 outerHTML 与 frameUrl；没弹窗返回 null', async
 });
 
 test('COURSE_TREE：解析章节标题、节的编号/名称/进度/时长/当前节', async () => {
-  await load([
-    '<div class="source-name">大学生心理素质发展</div>',
-    '<div class="source-down">北京理工大学</div>',
-    '<div class="videotop_lesson">第二章 自我意识</div>',
-    '<div class="videotop_lesson_tit">2.1 自我意识的内涵</div>',
-    '<ul>',
-    '<li class="clearfix font_gray_inclined chapter">第二章 自我意识</li>',
-    '<li class="clearfix video current_play"><span>2.1 自我意识的内涵</span><span>55%</span><span>00:11:17</span><b class="time_ico_half"></b></li>',
-    '<li class="clearfix video"><span>2.2 自我发展理论</span><span>00:10:20</span><b class="time_icofinish"></b></li>',
-    '<li class="clearfix chapter-test"><span>平时测试</span></li>',
-    '</ul>',
-  ].join(''));
+  await load(
+    [
+      '<div class="source-name">大学生心理素质发展</div>',
+      '<div class="source-down">北京理工大学</div>',
+      '<div class="videotop_lesson">第二章 自我意识</div>',
+      '<div class="videotop_lesson_tit">2.1 自我意识的内涵</div>',
+      '<ul>',
+      '<li class="clearfix font_gray_inclined chapter">第二章 自我意识</li>',
+      '<li class="clearfix video current_play"><span>2.1 自我意识的内涵</span><span>55%</span><span>00:11:17</span><b class="time_ico_half"></b></li>',
+      '<li class="clearfix video"><span>2.2 自我发展理论</span><span>00:10:20</span><b class="time_icofinish"></b></li>',
+      '<li class="clearfix chapter-test"><span>平时测试</span></li>',
+      '</ul>',
+    ].join('')
+  );
   const info = await pg.evaluate(COURSE_TREE);
   assert.equal(info.courseName, '大学生心理素质发展');
   assert.equal(info.school, '北京理工大学');
@@ -90,15 +94,17 @@ test('COURSE_TREE：解析章节标题、节的编号/名称/进度/时长/当�
 });
 
 test('COURSE_TREE：测试节点带 chapter 归属，b.finish 表示平台已交', async () => {
-  await load([
-    '<ul>',
-    '<li class="clearfix font_gray_inclined chapter">第一章 心理健康概述</li>',
-    '<li class="clearfix video"><span>1.1 心理健康概述</span><span>00:21:04</span></li>',
-    '<li class="clearfix chapter-test"><span>平时测试</span><b class="finish"></b></li>',
-    '<li class="clearfix font_gray_inclined chapter">第二章 大学生自我意识</li>',
-    '<li class="clearfix chapter-test"><span>平时测试</span><span class="iconfont iconbaizhoumoshi-zhangceshi-shubiaoyiru"></span></li>',
-    '</ul>',
-  ].join(''));
+  await load(
+    [
+      '<ul>',
+      '<li class="clearfix font_gray_inclined chapter">第一章 心理健康概述</li>',
+      '<li class="clearfix video"><span>1.1 心理健康概述</span><span>00:21:04</span></li>',
+      '<li class="clearfix chapter-test"><span>平时测试</span><b class="finish"></b></li>',
+      '<li class="clearfix font_gray_inclined chapter">第二章 大学生自我意识</li>',
+      '<li class="clearfix chapter-test"><span>平时测试</span><span class="iconfont iconbaizhoumoshi-zhangceshi-shubiaoyiru"></span></li>',
+      '</ul>',
+    ].join('')
+  );
   const info = await pg.evaluate(COURSE_TREE);
   assert.equal(info.lessons.length, 1);
   assert.equal(info.tests.length, 2);
@@ -110,7 +116,9 @@ test('COURSE_TREE：测试节点带 chapter 归属，b.finish 表示平台已交
 });
 
 test('ABNORMAL：识别「异常脚本」提示框', async () => {
-  await load('<div class="el-message-box">检测到异常脚本，为保证您的正常学习进度，请您关闭插件后，回到学堂重新进入视频学习页正常学习</div>');
+  await load(
+    '<div class="el-message-box">检测到异常脚本，为保证您的正常学习进度，请您关闭插件后，回到学堂重新进入视频学习页正常学习</div>'
+  );
   assert.match(await pg.evaluate(ABNORMAL), /异常脚本/);
   await load('<div class="el-message-box">普通提示</div>');
   assert.equal(await pg.evaluate(ABNORMAL), '');
@@ -120,7 +128,9 @@ test('VERIFY：识别屏幕内的安全验证弹窗；拖到屏幕外的常驻 i
   await load('<div class="el-dialog" style="width:400px;height:300px">请完成安全验证</div>');
   assert.match(await pg.evaluate(VERIFY), /安全验证/);
   // 腾讯 tcaptcha 的 iframe 常驻在屏幕外：内联样式里的文字不在 body.innerText 中，不能误判
-  await load('<iframe src="https://turing.captcha.qcloud.com/x" style="position:absolute;top:-1000000px;width:400px;height:300px"></iframe>');
+  await load(
+    '<iframe src="https://turing.captcha.qcloud.com/x" style="position:absolute;top:-1000000px;width:400px;height:300px"></iframe>'
+  );
   assert.equal(await pg.evaluate(VERIFY), '');
   await load('<iframe src="https://turing.captcha.qcloud.com/x" style="width:400px;height:300px"></iframe>');
   assert.equal(await pg.evaluate(VERIFY), '验证码 iframe');

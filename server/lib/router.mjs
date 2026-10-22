@@ -20,7 +20,7 @@ export function createRouter({ routes, token, log, context }) {
       return fail(res, 405, '请求方式不对', '请刷新页面后重试');
     }
     try {
-      const body = req.method === 'POST' ? await readJson(req) : {};
+      const body = req.method === 'POST' || req.method === 'PUT' ? await readJson(req) : {};
       await route.handler({ req, res, url, body, ...context() });
     } catch (e) {
       if (e && e.expose) return fail(res, e.status || 400, e.message, e.hint);

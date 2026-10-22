@@ -12,25 +12,38 @@ const TMP_DATA = path.join(ROOT, 'data', 'selftest-' + Date.now());
 
 function startServer(args) {
   return new Promise((resolve, reject) => {
-    const p = spawn(process.execPath, ['server/index.mjs', ...args], { cwd: ROOT, env: { ...process.env, ZHS_DATA: TMP_DATA } });
+    const p = spawn(process.execPath, ['server/index.mjs', ...args], {
+      cwd: ROOT,
+      env: { ...process.env, ZHS_DATA: TMP_DATA },
+    });
     let out = '';
     const t = setTimeout(() => reject(new Error('server timeout: ' + out)), 20000);
     p.stdout.on('data', (d) => {
       out += String(d);
       const m = out.match(/http:\/\/127\.0\.0\.1:(\d+)\/\?t=([0-9a-f]+)/);
-      if (m) { clearTimeout(t); resolve({ proc: p, port: m[1], token: m[2], url: m[0] }); }
+      if (m) {
+        clearTimeout(t);
+        resolve({ proc: p, port: m[1], token: m[2], url: m[0] });
+      }
     });
-    p.stderr.on('data', (d) => { out += String(d); });
+    p.stderr.on('data', (d) => {
+      out += String(d);
+    });
   });
 }
 
 async function api(base, token, p, body) {
-  const r = await fetch(base + p + '?t=' + token, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const r = await fetch(
+    base + p + '?t=' + token,
+    body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}
+  );
   return { status: r.status, body: await r.json() };
 }
 
 const results = [];
-const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: extra || '' }); };
+const ok = (name, cond, extra) => {
+  results.push({ name, pass: !!cond, extra: extra || '' });
+};
 
 // ---------- 1) 真实引擎：只启动服务，不启动浏览器 ----------
 {
@@ -42,7 +55,11 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   const bad = await api(base, 'deadbeef', '/api/state');
   ok('错误 token 被拒 403', bad.status === 403 && bad.body.hint, JSON.stringify(bad.body).slice(0, 120));
   const b2 = await api(base, s.token, '/api/control', { action: 'pause' });
-  ok('空闲时暂停被友好拒绝', b2.status === 409 && b2.body.message.includes('还没开始'), JSON.stringify(b2.body).slice(0, 120));
+  ok(
+    '空闲时暂停被友好拒绝',
+    b2.status === 409 && b2.body.message.includes('还没开始'),
+    JSON.stringify(b2.body).slice(0, 120)
+  );
   const c1 = await api(base, s.token, '/api/courses');
   ok('空闲时读课程被友好拒绝', c1.status === 409 && !!c1.body.hint, JSON.stringify(c1.body).slice(0, 120));
   const c2 = await api(base, s.token, '/api/course', { index: 0 });
@@ -77,20 +94,36 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   await api(base, s.token, '/api/control', { action: 'verify' });
   await sleep(500);
   const vSt = await api(base, s.token, '/api/state');
-  ok('mock 人机验证状态正确', vSt.body.phase === 'WAIT_VERIFY' && !!vSt.body.verifyHint, JSON.stringify({ phase: vSt.body.phase, hint: vSt.body.verifyHint }).slice(0, 120));
+  ok(
+    'mock 人机验证状态正确',
+    vSt.body.phase === 'WAIT_VERIFY' && !!vSt.body.verifyHint,
+    JSON.stringify({ phase: vSt.body.phase, hint: vSt.body.verifyHint }).slice(0, 120)
+  );
   await api(base, s.token, '/api/control', { action: 'unverify' });
   await sleep(500);
   const vSt2 = await api(base, s.token, '/api/state');
-  ok('mock 验证通过后继续播放', vSt2.body.phase === 'PLAYING' && !vSt2.body.verifyHint, JSON.stringify({ phase: vSt2.body.phase, hint: vSt2.body.verifyHint }).slice(0, 120));
+  ok(
+    'mock 验证通过后继续播放',
+    vSt2.body.phase === 'PLAYING' && !vSt2.body.verifyHint,
+    JSON.stringify({ phase: vSt2.body.phase, hint: vSt2.body.verifyHint }).slice(0, 120)
+  );
 
   const cr = await api(base, s.token, '/api/courses');
-  ok('mock 课程列表接口可用', cr.status === 200 && (cr.body.courses || []).length === 3, JSON.stringify(cr.body).slice(0, 120));
+  ok(
+    'mock 课程列表接口可用',
+    cr.status === 200 && (cr.body.courses || []).length === 3,
+    JSON.stringify(cr.body).slice(0, 120)
+  );
   const crBad = await api(base, s.token, '/api/course', {});
   ok('非法课程序号被友好拒绝', crBad.status === 400 && !!crBad.body.hint, JSON.stringify(crBad.body).slice(0, 120));
   const crPick = await api(base, s.token, '/api/course', { index: 1 });
   await sleep(400);
   const crSt = await api(base, s.token, '/api/state');
-  ok('mock 切课成功后课程名变化', crPick.status === 200 && (crSt.body.course || {}).name === '大学生心理健康教育', JSON.stringify(crSt.body.course).slice(0, 120));
+  ok(
+    'mock 切课成功后课程名变化',
+    crPick.status === 200 && (crSt.body.course || {}).name === '大学生心理健康教育',
+    JSON.stringify(crSt.body.course).slice(0, 120)
+  );
 
   const pz = await api(base, s.token, '/api/control', { action: 'pause' });
   const st1 = await api(base, s.token, '/api/state');
@@ -119,7 +152,11 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   const swCur = (swState.body.lessons || []).find((l) => l.current) || {};
   ok('手动选节切到 2.1', sw.status === 200 && swCur.code === '2.1', JSON.stringify(swCur).slice(0, 120));
   const badLesson = await api(base, s.token, '/api/lesson', { code: 'abc' });
-  ok('非法小节号被友好拒绝', badLesson.status === 400 && badLesson.body.hint, JSON.stringify(badLesson.body).slice(0, 100));
+  ok(
+    '非法小节号被友好拒绝',
+    badLesson.status === 400 && badLesson.body.hint,
+    JSON.stringify(badLesson.body).slice(0, 100)
+  );
   await api(base, s.token, '/api/lesson', { code: '1.2' });
 
   const rt = await api(base, s.token, '/api/control', { action: 'restart' });
@@ -131,7 +168,11 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   await sleep(900);
   const t1 = await page.locator('.wrap').innerText();
   ok('运行页显示课程名', t1.includes('大学生心理健康教育'), '');
-  ok('运行页有进度总览四列', ['本节视频', '本章节', '本课程', '全部课程'].every((k) => t1.includes(k)), '');
+  ok(
+    '运行页有进度总览四列',
+    ['本节视频', '本章节', '本课程', '全部课程'].every((k) => t1.includes(k)),
+    ''
+  );
   ok('运行页有暂停按钮', t1.includes('暂停'), '');
   ok('运行页有课程目录', t1.includes('课程目录') && t1.includes('已完成'), '');
   ok('运行页有自动跳节开关', t1.includes('自动跳下一节'), '');
@@ -139,8 +180,17 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   // 我的课程入口在顶部课程胶囊里，点开是弹窗
   await page.locator('.coursechip').click();
   await sleep(450);
-  const pickerTxt = (await page.locator('.modal').innerText().catch(() => '')).replace(/\n/g, ' ');
-  ok('课程胶囊能打开「我的课程」弹窗', pickerTxt.includes('我的课程') && pickerTxt.includes('刷新'), pickerTxt.slice(0, 120));
+  const pickerTxt = (
+    await page
+      .locator('.modal')
+      .innerText()
+      .catch(() => '')
+  ).replace(/\n/g, ' ');
+  ok(
+    '课程胶囊能打开「我的课程」弹窗',
+    pickerTxt.includes('我的课程') && pickerTxt.includes('刷新'),
+    pickerTxt.slice(0, 120)
+  );
   await page.keyboard.press('Escape');
   await sleep(350);
   ok('弹窗可以关掉', (await page.locator('.modal').count()) === 0, '');
@@ -151,7 +201,11 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   ok('运行页有章节测试卡片', tq.includes('章节测试') && tq.includes('自动做章节测试'), tq.slice(0, 80));
   const qRows = await page.locator('.qrow').count();
   ok('章节测试列出每一章', qRows >= 2, '行数 ' + qRows);
-  const qTag = await page.locator('.qtag.done').first().innerText().catch(() => '');
+  const qTag = await page
+    .locator('.qtag.done')
+    .first()
+    .innerText()
+    .catch(() => '');
   ok('已交的章显示「已交」+得分', qTag.includes('已交'), qTag);
   const firstDo = page.locator('.qrow button').filter({ hasText: '现在做' }).first();
   if (await firstDo.count()) {
@@ -214,13 +268,19 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   const t2 = await page.locator('.wrap').innerText();
   ok('退出后显示「重新开始」', t2.includes('重新开始'), '');
   const afterQuit = await api(base, s.token, '/api/lesson', { code: '1.2' });
-  ok('退出后选节被友好拒绝', afterQuit.status === 409 && afterQuit.body.hint, JSON.stringify(afterQuit.body).slice(0, 100));
+  ok(
+    '退出后选节被友好拒绝',
+    afterQuit.status === 409 && afterQuit.body.hint,
+    JSON.stringify(afterQuit.body).slice(0, 100)
+  );
   await page.screenshot({ path: 'docs/ui-stopped.png', fullPage: true });
   await br.close();
   s.proc.kill();
 }
 
-try { fs.rmSync(TMP_DATA, { recursive: true, force: true }); } catch {}
+try {
+  fs.rmSync(TMP_DATA, { recursive: true, force: true });
+} catch {}
 
 const failed = results.filter((r) => !r.pass);
 console.log(results.map((r) => (r.pass ? 'PASS ' : 'FAIL ') + r.name + (r.pass ? '' : '  << ' + r.extra)).join('\n'));

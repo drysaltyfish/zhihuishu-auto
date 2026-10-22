@@ -3,9 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const MIME = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
-  '.json': 'application/json; charset=utf-8', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.json': 'application/json; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
 };
 
 /**
@@ -34,8 +39,17 @@ export function fail(res, status, message, hint) {
 export function readJson(req, limit = 1e6) {
   return new Promise((resolve) => {
     let b = '';
-    req.on('data', (c) => { b += c; if (b.length > limit) req.destroy(); });
-    req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } });
+    req.on('data', (c) => {
+      b += c;
+      if (b.length > limit) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(b || '{}'));
+      } catch {
+        resolve({});
+      }
+    });
     req.on('error', () => resolve({}));
   });
 }
@@ -48,7 +62,11 @@ export function serveStatic(res, publicDir, pathname) {
   const fp = path.join(publicDir, safe);
   if (!fp.startsWith(publicDir)) throw missing();
   let st = null;
-  try { st = fs.statSync(fp); } catch { throw missing(); }
+  try {
+    st = fs.statSync(fp);
+  } catch {
+    throw missing();
+  }
   if (st.isDirectory()) throw missing();
   res.writeHead(200, {
     'content-type': MIME[path.extname(fp).toLowerCase()] || 'application/octet-stream',

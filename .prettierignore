@@ -1,0 +1,11 @@
+node_modules/
+.npm-cache/
+browsers/
+release/
+dist/
+data/
+server/public/
+package-lock.json
+*.md
+test/fixtures/
+

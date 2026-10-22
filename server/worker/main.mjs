@@ -7,8 +7,10 @@
  * ZHS_DEBUG=1 时把弹窗结构/截图/接口响应存到 data/debug/，只用于排错。
  */
 import { chromium } from 'playwright';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { askLLM as askLLMShared, askQuiz } from '../llm.mjs';
 import { mergePoints, nearestPoint, markAnswered, nextQuestionOf, toStateList } from './lib/question-points.mjs';
 import { chooseFallback, judge, labelOf, historyEntry } from './lib/answer-strategy.mjs';
@@ -29,7 +31,11 @@ const DEBUG_DIR = path.join(DATA, 'debug');
 fs.mkdirSync(PROFILE, { recursive: true });
 if (DEBUG) fs.mkdirSync(DEBUG_DIR, { recursive: true });
 
-const send = (m) => { try { process.send(m); } catch {} };
+const send = (m) => {
+  try {
+    process.send(m);
+  } catch {}
+};
 const log = (kind, msg) => send({ type: 'log', kind, msg: String(msg == null ? '' : msg) });
 const patch = (p) => send({ type: 'state', patch: p });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -53,43 +59,65 @@ let endedLogged = false;
 let pageInfoDumped = false;
 let lastVideoSwitchAt = 0;
 let lastPhase = 'PLAYING'; // 上一次推给前端的 phase（避免每秒重复发同一条）
-let lastCookieSaveAt = 0;  // 上次保存登录态的时间（Cookie 会滚动刷新，定期落盘）
-let autoQuiz = true;        // 自动做每章「平时测试」
-let quizChapters = [];      // 课程树按章归组（readCourseInfo 里更新）
-let quizzes = {};           // 章节测试断点：{ [章节名]: {status,score,title,at,count,total,answered,note} }
-let testDone = {};          // 课程树上标了「已交」的章节测试：{ [章节名]: true }
-let lastQuizCheck = 0;      // 上次检查「有没有该做的测试」的时间
-let quizBusy = false;       // 正在做测试（同一时间只跑一份）
+let lastCookieSaveAt = 0; // 上次保存登录态的时间（Cookie 会滚动刷新，定期落盘）
+let autoQuiz = true; // 自动做每章「平时测试」
+let quizChapters = []; // 课程树按章归组（readCourseInfo 里更新）
+let quizzes = {}; // 章节测试断点：{ [章节名]: {status,score,title,at,count,total,answered,note} }
+let testDone = {}; // 课程树上标了「已交」的章节测试：{ [章节名]: true }
+let lastQuizCheck = 0; // 上次检查「有没有该做的测试」的时间
+let quizBusy = false; // 正在做测试（同一时间只跑一份）
 
 /* ---------------- 配置（LLM 用） ---------------- */
 const DEFAULT_CONFIG = {
-  llm: { provider: 'deepseek', apiKey: '', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', timeoutMs: 20000 },
+  llm: {
+    provider: 'deepseek',
+    apiKey: '',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-chat',
+    timeoutMs: 20000,
+  },
 };
 function loadConfig() {
   try {
     const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
     const llm = { ...DEFAULT_CONFIG.llm, ...(raw.llm || {}) };
     return { llm };
-  } catch { return { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm } }; }
+  } catch {
+    return { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm } };
+  }
 }
 let CONFIG = loadConfig();
 
 function readSavedUrl() {
-  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).resumeUrl || ''; } catch { return ''; }
+  try {
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).resumeUrl || '';
+  } catch {
+    return '';
+  }
 }
 function saveUrl(url) {
   try {
-    const cur = (() => { try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; } })();
+    const cur = (() => {
+      try {
+        return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      } catch {
+        return {};
+      }
+    })();
     fs.writeFileSync(STATE_FILE, JSON.stringify({ ...cur, resumeUrl: url, updatedAt: Date.now() }, null, 2));
   } catch {}
 }
 function dump(name, text) {
   if (!DEBUG) return;
-  try { fs.writeFileSync(path.join(DEBUG_DIR, name), String(text)); } catch {}
+  try {
+    fs.writeFileSync(path.join(DEBUG_DIR, name), String(text));
+  } catch {}
 }
 async function shot(name) {
   if (!DEBUG || !page || page.isClosed()) return;
-  try { await page.screenshot({ path: path.join(DEBUG_DIR, name) }); } catch {}
+  try {
+    await page.screenshot({ path: path.join(DEBUG_DIR, name) });
+  } catch {}
 }
 
 const CHROME_ARGS = [
@@ -103,6 +131,8 @@ const CHROME_ARGS = [
   '--no-default-browser-check',
   '--disable-session-crashed-bubble',
   '--window-size=1280,820',
+  // 一启动就落在屏幕外（配合 win-window.ps1 的隐藏逻辑，避免闪一下）
+  '--window-position=-32000,-32000',
 ];
 
 /* ================= 只读采样 ================= */
@@ -133,7 +163,13 @@ function attachNetwork(target) {
     try {
       const u = req.url();
       if (/popupAnswer|PopupExam/i.test(u)) {
-        const pd = (() => { try { return (req.postData() || '').slice(0, 800); } catch { return ''; } })();
+        const pd = (() => {
+          try {
+            return (req.postData() || '').slice(0, 800);
+          } catch {
+            return '';
+          }
+        })();
         log('info', '作答接口请求 ' + (req.method() + ' ' + u.split('?')[0].split('/').slice(-1)[0]));
         if (DEBUG) dump('req-' + Date.now() + '.txt', req.method() + ' ' + u + '\n\n' + pd);
       }
@@ -146,7 +182,9 @@ function attachNetwork(target) {
         const body = await resp.text().catch(() => '');
         dump('pointerinfo-' + Date.now() + '.json', body.slice(0, 20000));
         let j = {};
-        try { j = JSON.parse(body || '{}'); } catch {}
+        try {
+          j = JSON.parse(body || '{}');
+        } catch {}
         const pts = (j && j.data && j.data.questionPoint) || [];
         const vkey = lastVideoKey || '';
         const newVideo = !!vkey && !!questionPointsKey && vkey !== questionPointsKey;
@@ -155,7 +193,11 @@ function attachNetwork(target) {
         if (merged.mode === 'merged') {
           questionPointsKey = vkey;
           patch({ questionPoints: toStateList(questionPoints), pointsLoaded: true });
-          if (merged.changed) log('ok', '本节弹题点：' + questionPoints.map((q) => q.timeSec + 's' + (q.answered ? '(已答)' : '')).join('、'));
+          if (merged.changed)
+            log(
+              'ok',
+              '本节弹题点：' + questionPoints.map((q) => q.timeSec + 's' + (q.answered ? '(已答)' : '')).join('、')
+            );
           await applyPlaying();
         } else if (merged.mode === 'kept') {
           // 答完题后平台会再拉一次，可能回空列表：不能因此把前端的弹题点清空
@@ -173,7 +215,9 @@ function attachNetwork(target) {
         if (DEBUG) dump('resp-' + Date.now() + '.txt', u + '\n\n' + body.slice(0, 8000));
         if (/(save|commit|submit|answer)/i.test(u)) {
           let code = null;
-          try { code = JSON.parse(body).code; } catch {}
+          try {
+            code = JSON.parse(body).code;
+          } catch {}
           log('info', '作答接口返回 code=' + code);
         }
       }
@@ -190,7 +234,10 @@ function watchPage(p) {
     try {
       if (fr !== p.mainFrame()) return;
       const u = p.url();
-      if (u !== lastUrl) { log('info', '页面跳转：' + u.slice(0, 140)); lastUrl = u; }
+      if (u !== lastUrl) {
+        log('info', '页面跳转：' + u.slice(0, 140));
+        lastUrl = u;
+      }
       if (/stuStudy/i.test(u)) saveUrl(u);
     } catch {}
   });
@@ -207,22 +254,147 @@ function watchPage(p) {
 
 /** 指定「当前页面」 */
 function setPage(p) {
-  if (!p) { page = null; return; }
+  if (!p) {
+    page = null;
+    return;
+  }
   page = p;
   watchPage(p);
+}
+
+/* ================= 用哪个浏览器 ================= */
+const CHROME_CANDIDATES = [
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+].filter(Boolean);
+
+function launchOptions(sandbox = true) {
+  const opts = {
+    headless: false,
+    viewport: null,
+    chromiumSandbox: sandbox,
+    args: CHROME_ARGS,
+    ignoreDefaultArgs: ['--enable-automation', '--no-startup-window'],
+  };
+  // 优先用系统 Chrome；机器上没有就回落到安装包自带的 Chromium（PLAYWRIGHT_BROWSERS_PATH 指向 resources/browsers）
+  const sys = CHROME_CANDIDATES.find((x) => {
+    try {
+      return fs.existsSync(x);
+    } catch {
+      return false;
+    }
+  });
+  if (sys) {
+    opts.channel = 'chrome';
+    log('debug', '使用系统 Chrome：' + sys);
+  } else log('info', '没有装 Google Chrome，改用程序自带的浏览器');
+  return opts;
+}
+
+/* ================= 浏览器窗口：藏起来 / 叫出来 ================= */
+// 不用 SW_HIDE/最小化：那样页面里 visibilityState 会变 hidden，既可能被反爬判定，
+// 也会让后台计时器被节流。这里用「去掉任务栏按钮 + 移到屏幕外」，窗口仍算可见。
+const WIN_HELPER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'win-window.ps1');
+let browserHidden = process.platform === 'win32';
+
+function winHelper(action) {
+  if (process.platform !== 'win32') return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (!done) {
+        done = true;
+        resolve(ok);
+      }
+    };
+    let ps;
+    try {
+      ps = spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          WIN_HELPER,
+          '-Action',
+          action,
+          '-ProfilePath',
+          PROFILE,
+        ],
+        { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }
+      );
+    } catch {
+      return finish(false);
+    }
+    let out = '';
+    ps.stdout.on('data', (d) => {
+      out += String(d);
+    });
+    ps.stderr.on('data', (d) => {
+      out += String(d);
+    });
+    ps.on('error', () => finish(false));
+    const timer = setTimeout(() => {
+      try {
+        ps.kill();
+      } catch {}
+      finish(false);
+    }, 15000);
+    ps.on('exit', (code) => {
+      clearTimeout(timer);
+      if (code !== 0 && DEBUG) log('warn', '浏览器窗口操作没成功：' + out.replace(/\s+/g, ' ').slice(0, 160));
+      finish(code === 0);
+    });
+  });
+}
+
+async function hideBrowserWindow(why) {
+  if (process.platform !== 'win32') return false;
+  browserHidden = true;
+  const ok = await winHelper('hide');
+  if (ok) log('debug', '浏览器窗口已隐藏（任务栏也不显示）' + (why ? '：' + why : ''));
+  return ok;
+}
+
+async function showBrowserWindow() {
+  if (process.platform !== 'win32') {
+    patch({ notice: '只有 Windows 上才能单独把浏览器窗口叫出来' });
+    return false;
+  }
+  browserHidden = false;
+  const ok = await winHelper('show');
+  if (page && !page.isClosed()) {
+    try {
+      await page.bringToFront();
+    } catch {}
+  }
+  if (ok) log('info', '浏览器窗口已打开，可以在里面手动登录或操作');
+  else log('warn', '没找到浏览器窗口（可能已经关掉了）');
+  patch({
+    notice: ok
+      ? '浏览器窗口已打开：在里面登录或点好课程后，回到这里点「继续」'
+      : '没找到浏览器窗口，点「重启」再试一次',
+  });
+  return ok;
 }
 
 /* ================= 启动 / 登录 ================= */
 async function launch() {
   patch({ phase: 'LAUNCHING' });
   log('info', '正在启动 Chrome…');
-  ctx = await chromium.launchPersistentContext(PROFILE, {
-    channel: 'chrome',
-    headless: false,
-    viewport: null,
-    args: CHROME_ARGS,
-    ignoreDefaultArgs: ['--enable-automation', '--no-startup-window'],
-  });
+  // chromiumSandbox:true 只是让 Playwright 别自动塞 --no-sandbox（Chrome 会提示参数不支持）。
+  // 但有的 Windows 环境（浏览器进程的父进程是 Electron、或系统安全策略较严）下 Chrome 沙箱起不来，
+  // 表现为浏览器刚启动就退出（exitCode=2147483651）。这时退回 Playwright 默认的兼容模式再试一次。
+  try {
+    ctx = await chromium.launchPersistentContext(PROFILE, launchOptions(true));
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    log('warn', '浏览器沙箱模式没起来，改用兼容模式重试：' + msg.split('\n')[0].slice(0, 120));
+    ctx = await chromium.launchPersistentContext(PROFILE, launchOptions(false));
+  }
   attachNetwork(ctx);
   // 智慧树的登录 Cookie 是会话 Cookie，Chrome 关掉就没了；启动时先把上次存的注入回去
   const saved = loadCookies(DATA);
@@ -230,15 +402,25 @@ async function launch() {
     try {
       await ctx.addCookies(saved);
       log('info', '已恢复上次的登录态（' + saved.length + ' 个 Cookie），不用重新扫码');
-    } catch (e) { log('warn', '恢复登录态失败：' + String((e && e.message) || e).slice(0, 120)); }
+    } catch (e) {
+      log('warn', '恢复登录态失败：' + String((e && e.message) || e).slice(0, 120));
+    }
   }
   setPage(ctx.pages()[0] || (await ctx.newPage()));
   ctx.on('page', (p) => {
     try {
       watchPage(p);
       if (!page || page.isClosed()) setPage(p);
+      // 新标签页会自己冒到任务栏，等它画出来再藏一次
+      if (browserHidden)
+        setTimeout(() => {
+          hideBrowserWindow('新标签页').catch(() => {});
+        }, 900);
     } catch {}
   });
+  // 窗口刚起来时 Chrome 会先画一帧，稍等一下再藏，避免屏幕上一闪
+  await sleep(700);
+  if (browserHidden) await hideBrowserWindow('启动时');
 }
 
 /** 把当前登录 Cookie 落盘（登录成功 / 定期 / 退出时各存一次） */
@@ -258,7 +440,130 @@ async function hasLoginCookie() {
   try {
     const cs = await ctx.cookies();
     return cs.some((c) => /^(CASLOGC|jt-cas|SERVERID_CAS)$/i.test(c.name) && c.value && c.value.length > 10);
-  } catch { return false; }
+  } catch {
+    return false;
+  }
+}
+
+/* ---- 微信扫码登录：二维码截给前端显示，不用用户去浏览器窗口里找 ---- */
+const QR_FILE = path.join(DATA, 'login-qr.png');
+let qrAt = 0;
+
+function clearLoginUi() {
+  qrAt = 0;
+  try {
+    fs.rmSync(QR_FILE, { force: true });
+  } catch {}
+  patch({ loginNeeded: false, loginHint: '', qrUrl: '' });
+}
+
+function closeLoginDialog() {
+  return (async () => {
+    if (!page || page.isClosed()) return;
+    try {
+      const x = page.locator('.el-dialog__headerbtn, .el-dialog__close').first();
+      if (await x.count()) {
+        await x.click({ timeout: 3000 }).catch(() => {});
+        await sleep(700);
+      }
+    } catch {}
+  })();
+}
+
+/** 登录中心在 login.zhihuishu.com；从 onlineweb 进来会先经过 passport 再 302 过去，要等它跳完 */
+const LOGIN_HOST_RE = /(login|passport)\.zhihuishu\.com/i;
+async function waitLoginCenter(ms) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms && !stopped) {
+    if (!page || page.isClosed()) return false;
+    if (/login\.zhihuishu\.com/i.test(page.url())) return true;
+    // 有时地址还没变成 login.zhihuishu.com，但按钮已经在页面里了
+    if (
+      await page
+        .locator('.login-by-wei')
+        .count()
+        .catch(() => 0)
+    )
+      return true;
+    await sleep(500);
+  }
+  return false;
+}
+
+/** 打开登录中心 → 点「通过微信登录」→ 把二维码元素截到 data/login-qr.png → 让界面显示 */
+async function ensureQrImage() {
+  if (!page || page.isClosed()) return false;
+  try {
+    if (!LOGIN_HOST_RE.test(page.url())) {
+      await page
+        .goto('https://onlineweb.zhihuishu.com/', { waitUntil: 'domcontentloaded', timeout: 60000 })
+        .catch(() => {});
+    }
+    // 从这里到登录中心要跳一两次（passport → login），别急着找按钮
+    if (!(await waitLoginCenter(30000))) {
+      log('warn', '没等到登录中心：' + String(page.url()).slice(0, 120));
+      return false;
+    }
+    // 刚跳到登录中心时页面还在渲染，直接点会把按钮点空：等按钮真的可见再点
+    await sleep(1500);
+    // 弹窗已经开着就不用再点入口
+    if (
+      !(await page
+        .locator('.wx-code-wrapper')
+        .count()
+        .catch(() => 0))
+    ) {
+      let entry = page.locator('.login-by-wei').first();
+      if (!(await entry.count().catch(() => 0))) entry = page.getByText(/通过微信登录|微信登录/).first();
+      if (!(await entry.count().catch(() => 0))) {
+        log('warn', '登录中心里没找到「通过微信登录」按钮');
+        return false;
+      }
+      await entry.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+      try {
+        await entry.click({ timeout: 8000 });
+      } catch (e1) {
+        try {
+          await entry.click({ force: true, timeout: 8000 });
+        } catch (e2) {
+          log('warn', '点「通过微信登录」失败：' + String((e2 && e2.message) || e1).slice(0, 140));
+        }
+      }
+      await sleep(2500);
+    }
+    const box = page.locator('.wx-code-wrapper').first();
+    try {
+      await box.waitFor({ state: 'visible', timeout: 25000 });
+    } catch {
+      log('warn', '二维码元素没出现，当前页：' + String(page.url()).slice(0, 120));
+      return false;
+    }
+    await box.screenshot({ path: QR_FILE });
+    qrAt = Date.now();
+    patch({ loginNeeded: true, loginHint: '请用微信扫一扫下面的二维码登录智慧树', qrUrl: '/api/qr?v=' + Date.now() });
+    log('info', '已把微信登录二维码送到界面，用手机微信扫码并确认即可');
+    return true;
+  } catch (e) {
+    log('warn', '抓登录二维码失败：' + String((e && e.message) || e).slice(0, 140));
+    return false;
+  }
+}
+
+/** 二维码约 2 分钟就过期：关掉旧弹窗重新要一张 */
+async function refreshQr(why) {
+  if (!ctx) {
+    patch({ notice: '还没启动：点「开始听课」会自动打开登录页' });
+    return false;
+  }
+  if (await hasLoginCookie()) {
+    clearLoginUi();
+    return true;
+  }
+  await closeLoginDialog();
+  const ok = await ensureQrImage();
+  if (!ok) patch({ loginHint: '没拿到二维码：可以点「在浏览器窗口中登录」手动登录', qrUrl: '' });
+  else if (why) log('info', '二维码已刷新（' + why + '）');
+  return ok;
 }
 
 async function ensureLogin() {
@@ -266,17 +571,31 @@ async function ensureLogin() {
   if (!/zhihuishu/i.test(url)) {
     await page.goto('https://www.zhihuishu.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   }
-  if (await hasLoginCookie()) { log('ok', '检测到已登录'); await persistLogin('启动时'); return true; }
-  patch({ phase: 'WAIT_LOGIN', loginNeeded: true, loginHint: '请在弹出的浏览器窗口里扫码登录智慧树（微信/QQ）' });
+  if (await hasLoginCookie()) {
+    log('ok', '检测到已登录');
+    await persistLogin('启动时');
+    clearLoginUi();
+    return true;
+  }
+  patch({ phase: 'WAIT_LOGIN', loginNeeded: true, loginHint: '正在打开微信扫码登录…' });
   log('warn', '等待扫码登录…');
+  await refreshQr('');
   const deadline = Date.now() + 20 * 60 * 1000;
+  let nextQrTry = Date.now() + 15000;
   while (Date.now() < deadline && !stopped) {
     if (await hasLoginCookie()) {
-      patch({ phase: 'COURSE_PICK', loginNeeded: false, loginHint: '' });
+      clearLoginUi();
+      patch({ phase: 'COURSE_PICK' });
       log('ok', '登录成功，登录态已保存（下次不用再扫码）');
       await persistLogin('扫码登录成功');
       await sleep(1500);
       return true;
+    }
+    // 二维码会过期：约 95 秒换一张；如果一直没拿到就每 15 秒再试
+    if (qrAt && Date.now() - qrAt > 95000) await refreshQr('二维码快过期了');
+    else if (!qrAt && Date.now() > nextQrTry) {
+      nextQrTry = Date.now() + 15000;
+      await refreshQr('');
     }
     await sleep(1500);
   }
@@ -288,10 +607,22 @@ async function ensureLogin() {
 /* ================= 选课 ================= */
 async function ensureCourse() {
   const saved = readSavedUrl();
-  if (saved && await gotoCourse(saved)) return true;
-  patch({ phase: 'COURSE_PICK', pickHint: '请在浏览器窗口里点进你要听的课程视频页（未听完的那节）' });
-  log('warn', '等待你手动进入课程视频页…');
+  if (saved && (await gotoCourse(saved))) return true;
+  // 浏览器窗口是藏起来的：不靠用户去窗口里点，改成把课程列表送到界面，等界面下指令
+  patch({
+    phase: 'COURSE_PICK',
+    pickHint: '请在「选课」页选一门课；也可以点「在浏览器窗口中操作」自己点进去',
+  });
+  log('warn', '还没有上次的课程：打开「我的学堂」读课程列表…');
+  try {
+    await page.goto(LEARN_HOME, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await sleep(1500);
+  } catch (e) {
+    log('warn', '打开学堂页失败：' + String((e && e.message) || e).slice(0, 120));
+  }
+  await listCourses(true).catch(() => {});
   const deadline = Date.now() + 20 * 60 * 1000;
+  let nextList = Date.now() + 60000;
   while (Date.now() < deadline && !stopped) {
     const u = (page && page.url()) || '';
     if (/stuStudy/i.test(u)) {
@@ -300,6 +631,11 @@ async function ensureCourse() {
       log('ok', '已进入课程页');
       await sleep(3000);
       return true;
+    }
+    // 20 分钟里课程可能被学校新开/移出，隔一分钟刷新一次列表
+    if (Date.now() > nextList) {
+      nextList = Date.now() + 60000;
+      listCourses(true).catch(() => {});
     }
     await sleep(1500);
   }
@@ -312,15 +648,20 @@ async function gotoCourse(url) {
     patch({ phase: 'COURSE_PICK', pickHint: '正在打开上次的课程…' });
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await sleep(2500);
-    if (/stuStudy/i.test(url === '' ? '' : page.url())) { log('ok', '已回到上次的课程'); return true; }
-  } catch (e) { log('warn', '上次的课程打不开了，改手动选课'); }
+    if (/stuStudy/i.test(url === '' ? '' : page.url())) {
+      log('ok', '已回到上次的课程');
+      return true;
+    }
+  } catch (e) {
+    log('warn', '上次的课程打不开了，改手动选课');
+  }
   return false;
 }
 
 /** 课程树里的每一节（按平台列出的顺序） */
 let lessons = [];
-let courseInfo = {};          // 当前课程的 {name, school, chapter}，用于判断"选了同一门课"
-let questionPointsKey = '';  // 弹题点是哪个视频（lastVideoKey）的
+let courseInfo = {}; // 当前课程的 {name, school, chapter}，用于判断"选了同一门课"
+let questionPointsKey = ''; // 弹题点是哪个视频（lastVideoKey）的
 
 /** 只读地把课程/章节/课程树摘出来；顺带算出本章节、本课程的进度 */
 async function readCourseInfo() {
@@ -333,15 +674,19 @@ async function readCourseInfo() {
     const course = {};
     if (info.courseName) course.name = info.courseName;
     if (info.chapter || info.lesson) course.chapter = [info.chapter, info.lesson].filter(Boolean).join(' / ');
-    if (Object.keys(course).length) { courseInfo = { ...courseInfo, ...course }; patch({ course }); }
+    if (Object.keys(course).length) {
+      courseInfo = { ...courseInfo, ...course };
+      patch({ course });
+    }
 
     const cur = lessons.find((l) => l.current) || null;
     const sumOf = (arr) => {
-      let w = 0; let t = 0;
+      let w = 0;
+      let t = 0;
       for (const l of arr) {
         if (!l.durSec) continue;
         t += l.durSec;
-        const p = l.pct != null ? l.pct : (l.doneAttr ? 100 : 0);
+        const p = l.pct != null ? l.pct : l.doneAttr ? 100 : 0;
         w += Math.round((l.durSec * p) / 100);
       }
       return { watched: w, total: t, pct: t ? Math.round((w / t) * 100) : null };
@@ -350,14 +695,42 @@ async function readCourseInfo() {
     quizChapters = groupChapters(lessons);
     testDone = platformDoneMap(info && info.tests);
     patch({
-      lessons: lessons.map((l) => ({ code: l.code, name: l.name, pct: l.pct, durText: l.durText, durSec: l.durSec, current: l.current, chapter: l.chapter, done: l.doneAttr })),
+      lessons: lessons.map((l) => ({
+        code: l.code,
+        name: l.name,
+        pct: l.pct,
+        durText: l.durText,
+        durSec: l.durSec,
+        current: l.current,
+        chapter: l.chapter,
+        done: l.doneAttr,
+      })),
       summary: { chapter: sumOf(inChapter), course: sumOf(lessons) },
       quizzes: quizListOf(quizChapters, quizzes, testDone),
       quizChapters: quizChapters.map((c) => ({ chapter: c.chapter, total: c.total, done: c.done, allDone: c.allDone })),
     });
-    if (DEBUG) log('debug', '课程树：' + lessons.length + ' 节，已完成 ' + lessons.filter((l) => l.doneAttr).length + ' 节；当前 ' + (cur ? cur.code + ' ' + cur.name + '（' + (cur.doneAttr ? '已完成' : cur.pct == null ? '未开始' : cur.pct + '%') + '）' : '未识别'));
+    if (DEBUG)
+      log(
+        'debug',
+        '课程树：' +
+          lessons.length +
+          ' 节，已完成 ' +
+          lessons.filter((l) => l.doneAttr).length +
+          ' 节；当前 ' +
+          (cur
+            ? cur.code +
+              ' ' +
+              cur.name +
+              '（' +
+              (cur.doneAttr ? '已完成' : cur.pct == null ? '未开始' : cur.pct + '%') +
+              '）'
+            : '未识别')
+      );
     return info;
-  } catch (e) { log('warn', '读取课程信息失败（忽略）'); return null; }
+  } catch (e) {
+    log('warn', '读取课程信息失败（忽略）');
+    return null;
+  }
 }
 
 /** 点课程树里的某一节（真实点击） */
@@ -370,9 +743,17 @@ async function clickLesson(code) {
   try {
     // 弹题弹窗会盖住课程树，先把它关掉再点，否则鼠标点在遮罩上
     const dlg = await findDialog();
-    if (dlg) { log('info', '先关掉挡住的弹题，再切小节'); await closeDialog(dlg); await sleep(700); }
+    if (dlg) {
+      log('info', '先关掉挡住的弹题，再切小节');
+      await closeDialog(dlg);
+      await sleep(700);
+    }
     const already = lessons.find((l) => l.current);
-    if (already && already.code === code) { switching = false; log('info', '已经在 ' + code + ' 这一节，不用切'); return true; }
+    if (already && already.code === code) {
+      switching = false;
+      log('info', '已经在 ' + code + ' 这一节，不用切');
+      return true;
+    }
     const before = lastVideoKey;
     const lis = page.locator('li.video');
     const n = await lis.count();
@@ -388,18 +769,26 @@ async function clickLesson(code) {
       box = await el.boundingBox().catch(() => null);
       break;
     }
-    if (!box) { log('warn', '课程树里没找到/看不到 ' + code); switching = false; return false; }
+    if (!box) {
+      log('warn', '课程树里没找到/看不到 ' + code);
+      switching = false;
+      return false;
+    }
     // 必须是真实鼠标事件（isTrusted=true）：平台对脚本合成的 click 会报「检测到异常脚本」
     for (let attempt = 1; attempt <= 3; attempt++) {
       await page.mouse.click(box.x + Math.min(40, Math.max(12, box.width / 2)), box.y + box.height / 2);
-      log('info', '已用真实鼠标点课程树 ' + code + '（' + hitText + '）' + (attempt > 1 ? ' · 第 ' + attempt + ' 次' : ''));
+      log(
+        'info',
+        '已用真实鼠标点课程树 ' + code + '（' + hitText + '）' + (attempt > 1 ? ' · 第 ' + attempt + ' 次' : '')
+      );
       for (let k = 0; k < 12; k++) {
         await sleep(700);
         const fv = await findVideo();
         if (fv) {
           const key = fv.v.src + '|' + Math.round(fv.v.dur);
           if (before && key !== before) {
-            lastVideoKey = key; lastCt = fv.v.ct;
+            lastVideoKey = key;
+            lastCt = fv.v.ct;
             await sleep(1500);
             await readCourseInfo();
             log('ok', '已切到 ' + code + '，时长 ' + Math.round(fv.v.dur) + 's，从 ' + Math.round(fv.v.ct) + 's 继续');
@@ -411,13 +800,21 @@ async function clickLesson(code) {
       }
       log('warn', '点了 ' + code + ' 但视频没变，重试');
       const dlg2 = await findDialog();
-      if (dlg2) { await closeDialog(dlg2); await sleep(600); }
-      const box2 = await lis.nth(0).count().catch(() => 0);
+      if (dlg2) {
+        await closeDialog(dlg2);
+        await sleep(600);
+      }
+      const box2 = await lis
+        .nth(0)
+        .count()
+        .catch(() => 0);
       if (!box2) break;
     }
     log('warn', '点了 ' + code + ' 但视频始终没变');
     await shot('clickfail-' + Date.now() + '.png');
-  } catch (e) { log('warn', '点课程树失败：' + String(e && e.message || e).slice(0, 120)); }
+  } catch (e) {
+    log('warn', '点课程树失败：' + String((e && e.message) || e).slice(0, 120));
+  }
   switching = false;
   return false;
 }
@@ -452,7 +849,7 @@ async function recoverFromAbnormal(why) {
   patch({ phase: 'RECOVERING', notice: '平台提示检测到脚本，正在重新进入视频页（不影响已看进度）' });
   await shot('abnormal-' + Date.now() + '.png');
   try {
-    const url = lastStudyUrl && lastStudyUrl.includes('stuStudy') ? lastStudyUrl : (page && page.url());
+    const url = lastStudyUrl && lastStudyUrl.includes('stuStudy') ? lastStudyUrl : page && page.url();
     if (!url) return false;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await sleep(3000);
@@ -468,7 +865,9 @@ async function recoverFromAbnormal(why) {
     }
     log('warn', '重新进入后没找到视频，等你手动点一下');
     patch({ phase: 'COURSE_PICK', pickHint: '重新进入后没自动找到视频，请点进要听的节' });
-  } catch (e) { log('err', '重新进入失败：' + String(e && e.message || e).slice(0, 140)); }
+  } catch (e) {
+    log('err', '重新进入失败：' + String((e && e.message) || e).slice(0, 140));
+  }
   return false;
 }
 
@@ -516,10 +915,23 @@ async function maybeAdvanceLesson(force) {
     }
     return false;
   }
-  log('ok', '本节 ' + (cur.code || '?') + ' 已看完，自动切到 ' + nxt.code + '（' + (nxt.pct == null ? '还没开始' : nxt.pct + '%') + '）');
+  log(
+    'ok',
+    '本节 ' +
+      (cur.code || '?') +
+      ' 已看完，自动切到 ' +
+      nxt.code +
+      '（' +
+      (nxt.pct == null ? '还没开始' : nxt.pct + '%') +
+      '）'
+  );
   patch({ notice: '本节已看完，正在切到 ' + nxt.code + ' ' + nxt.name });
   const ok = await clickLesson(nxt.code);
-  if (ok) { await applyPlaying(); patch({ notice: '' }); lastLessonCheck = Date.now(); }
+  if (ok) {
+    await applyPlaying();
+    patch({ notice: '' });
+    lastLessonCheck = Date.now();
+  }
   return ok;
 }
 
@@ -533,7 +945,10 @@ async function ensurePlaying() {
   for (const sel of PLAY_BUTTON_CSS) {
     try {
       const loc = page.locator(sel).first();
-      if (await loc.isVisible({ timeout: 800 })) { await loc.click({ timeout: 2000 }); break; }
+      if (await loc.isVisible({ timeout: 800 })) {
+        await loc.click({ timeout: 2000 });
+        break;
+      }
     } catch {}
   }
   await sleep(1200);
@@ -576,8 +991,14 @@ async function clickOption(fd, idx) {
   const n = await opts.count();
   if (!n) return { ok: false, why: '选项定位为 0' };
   const i = Math.max(0, Math.min(idx, n - 1));
-  try { await opts.nth(i).click({ timeout: 5000 }); return { ok: true, clicked: i }; } catch (e) { }
-  try { await opts.nth(i).locator('.item-topic').click({ timeout: 3000 }); return { ok: true, clicked: i }; } catch (e) { }
+  try {
+    await opts.nth(i).click({ timeout: 5000 });
+    return { ok: true, clicked: i };
+  } catch (e) {}
+  try {
+    await opts.nth(i).locator('.item-topic').click({ timeout: 3000 });
+    return { ok: true, clicked: i };
+  } catch (e) {}
   return { ok: false, why: '点击失败' };
 }
 
@@ -591,7 +1012,7 @@ async function closeDialog(fd) {
   ];
   for (const loc of tries) {
     try {
-      if (await loc.count() && await loc.isVisible().catch(() => false)) {
+      if ((await loc.count()) && (await loc.isVisible().catch(() => false))) {
         await loc.click({ timeout: 3000 });
         await sleep(600);
         if (!(await findDialog())) return '已关闭';
@@ -607,7 +1028,19 @@ async function handleDialog(st) {
   try {
     let fd = { frame: st.dialogFrame, d: st.dialog };
     let d = st.dialog;
-    log('warn', '弹题出现：' + (d.type || '题目') + '，选项 ' + d.optionCount + ' 个，第 ' + d.pageIndex + '/' + d.pages + ' 页，已作答=' + (d.answered ? '是' : '否'));
+    log(
+      'warn',
+      '弹题出现：' +
+        (d.type || '题目') +
+        '，选项 ' +
+        d.optionCount +
+        ' 个，第 ' +
+        d.pageIndex +
+        '/' +
+        d.pages +
+        ' 页，已作答=' +
+        (d.answered ? '是' : '否')
+    );
     log('info', '题面：' + (d.title || '').slice(0, 200));
     patch({ phase: 'ANSWERING', video: { paused: true } });
     await dumpDialogDetail(fd, 'open');
@@ -633,7 +1066,10 @@ async function handleDialog(st) {
     // 逐个题目页处理
     for (let round = 0; round < 6; round++) {
       d = (await findDialog()) ? (await findDialog()).d : null;
-      if (!d) { log('ok', '弹窗已关闭'); break; }
+      if (!d) {
+        log('ok', '弹窗已关闭');
+        break;
+      }
       fd = await findDialog();
       const pt = nearestPoint(questionPoints, lastCt);
       if (d.answered) {
@@ -642,27 +1078,48 @@ async function handleDialog(st) {
         let chosenIdx = 0;
         let how = '随机';
         const res = await askLLM(d);
-        if (res.ok) { chosenIdx = res.idx; how = 'LLM'; log('ok', 'LLM 选择 ' + (d.options[chosenIdx].label || chosenIdx) + '（模型回：' + res.raw + '）'); }
-        else {
+        if (res.ok) {
+          chosenIdx = res.idx;
+          how = 'LLM';
+          log('ok', 'LLM 选择 ' + (d.options[chosenIdx].label || chosenIdx) + '（模型回：' + res.raw + '）');
+        } else {
           chosenIdx = chooseFallback(d.options).idx;
           log('info', '随机选择（' + res.why + '）：' + (d.options[chosenIdx].label || chosenIdx + 1));
         }
         const click = await clickOption(fd, chosenIdx);
-        if (!click.ok) { log('err', '选项点不动：' + click.why); patch({ phase: 'PAUSED', notice: '选项点不动，已停下' }); return; }
+        if (!click.ok) {
+          log('err', '选项点不动：' + click.why);
+          patch({ phase: 'PAUSED', notice: '选项点不动，已停下' });
+          return;
+        }
 
         // 等提交结果（平台点选项即提交，随后出现 正确/错误 + 正确答案）
         let after = null;
         for (let i = 0; i < 20; i++) {
           await sleep(400);
           const now = await findDialog();
-          if (!now) { after = null; break; }
-          if (now.d.answered) { after = now.d; break; }
+          if (!now) {
+            after = null;
+            break;
+          }
+          if (now.d.answered) {
+            after = now.d;
+            break;
+          }
         }
         if (after) {
           const chosenLabel = labelOf(d.options[chosenIdx]);
           const correctLabel = labelOf({ label: after.answerText });
           const right = judge(chosenLabel, correctLabel);
-          log(right ? 'ok' : 'warn', (right ? '答对了' : '答错了') + '（我选 ' + (chosenLabel || '?') + '，正确答案 ' + (correctLabel || '?') + '），开始关闭弹窗');
+          log(
+            right ? 'ok' : 'warn',
+            (right ? '答对了' : '答错了') +
+              '（我选 ' +
+              (chosenLabel || '?') +
+              '，正确答案 ' +
+              (correctLabel || '?') +
+              '），开始关闭弹窗'
+          );
           await dumpDialogDetail(fd, 'answered');
           recordAnswer(pt, d, chosenIdx, how, right, after.answerText);
         } else {
@@ -675,7 +1132,12 @@ async function handleDialog(st) {
       const cur = await findDialog();
       if (!cur) break;
       if (cur.d.hasNextPage) {
-        try { await dialogBox(cur.frame).locator('.btn-next').first().click({ timeout: 2000 }); log('info', '弹题有下一页，已翻页'); await sleep(1200); continue; } catch {}
+        try {
+          await dialogBox(cur.frame).locator('.btn-next').first().click({ timeout: 2000 });
+          log('info', '弹题有下一页，已翻页');
+          await sleep(1200);
+          continue;
+        } catch {}
       }
       const closed = await closeDialog(cur);
       log(closed === '已关闭' ? 'ok' : 'warn', '关闭弹窗：' + closed);
@@ -693,7 +1155,7 @@ async function handleDialog(st) {
       await ensurePlaying();
     }
   } catch (e) {
-    log('err', '作答过程出错：' + String(e && e.message || e).slice(0, 200));
+    log('err', '作答过程出错：' + String((e && e.message) || e).slice(0, 200));
     patch({ phase: 'PAUSED' });
   } finally {
     answerBusy = false;
@@ -708,7 +1170,13 @@ function recordAnswer(pt, d, chosenIdx, how, right, answerText) {
   patch({
     questionPoints: toStateList(questionPoints),
     nextQuestion: nextQuestionOf(questionPoints, lastCt),
-    answers: { auto: autoAnswer, advance: autoAdvance, count: history.length, strategy: CONFIG.llm && CONFIG.llm.apiKey ? 'llm' : 'random', right: history.filter((h) => h.right).length },
+    answers: {
+      auto: autoAnswer,
+      advance: autoAdvance,
+      count: history.length,
+      strategy: CONFIG.llm && CONFIG.llm.apiKey ? 'llm' : 'random',
+      right: history.filter((h) => h.right).length,
+    },
     history: history.slice(),
   });
 }
@@ -716,22 +1184,49 @@ function recordAnswer(pt, d, chosenIdx, how, right, answerText) {
 /* 决策里说的「动作」在这里变成真正的 I/O（决策本身在 lib/tick.mjs，纯函数） */
 async function runEffect(e, st) {
   try {
-    if (e.type === 'resetPoints') { questionPoints = []; questionPointsKey = ''; patch({ pointsLoaded: false }); return; }
-    if (e.type === 'readCourseInfo') { await readCourseInfo(); return; }
-    if (e.type === 'shot') { await shot(e.name); return; }
-    if (e.type === 'ensurePlaying') { await ensurePlaying(); return; }
-    if (e.type === 'advance') { const ok = await maybeAdvanceLesson(!!e.force); if (!ok && e.onFalse) patch(e.onFalse); return; }
-    if (e.type === 'recoverPage') { await recoverPage(); return; }
-    if (e.type === 'handleDialog') { await handleDialog(st); return; }
+    if (e.type === 'resetPoints') {
+      questionPoints = [];
+      questionPointsKey = '';
+      patch({ pointsLoaded: false });
+      return;
+    }
+    if (e.type === 'readCourseInfo') {
+      await readCourseInfo();
+      return;
+    }
+    if (e.type === 'shot') {
+      await shot(e.name);
+      return;
+    }
+    if (e.type === 'ensurePlaying') {
+      await ensurePlaying();
+      return;
+    }
+    if (e.type === 'advance') {
+      const ok = await maybeAdvanceLesson(!!e.force);
+      if (!ok && e.onFalse) patch(e.onFalse);
+      return;
+    }
+    if (e.type === 'recoverPage') {
+      await recoverPage();
+      return;
+    }
+    if (e.type === 'handleDialog') {
+      await handleDialog(st);
+      return;
+    }
   } catch (err) {
-    log('warn', '动作执行失败（已忽略）：' + e.type + ' ' + String(err && err.message || err).slice(0, 120));
+    log('warn', '动作执行失败（已忽略）：' + e.type + ' ' + String((err && err.message) || err).slice(0, 120));
   }
 }
 
 /* ================= 主循环 ================= */
 async function loop() {
   if (stopped) return;
-  if (switchingCourse) { setTimeout(loop, 1500); return; }
+  if (switchingCourse) {
+    setTimeout(loop, 1500);
+    return;
+  }
   try {
     try {
       const u = page && !page.isClosed() ? page.url() : '';
@@ -743,7 +1238,10 @@ async function loop() {
       if (!stopped) setTimeout(loop, 2500);
       return;
     }
-    if (switchingCourse) { setTimeout(loop, 1500); return; }
+    if (switchingCourse) {
+      setTimeout(loop, 1500);
+      return;
+    }
 
     // 人机验证：检测到就停下等人点，点完自动恢复播放
     const vfy = await detectVerify();
@@ -754,7 +1252,11 @@ async function loop() {
         await pauseVideoQuiet();
         await shot('verify-' + Date.now() + '.png');
         log('warn', '智慧树弹出人机验证（' + vfy.slice(0, 40) + '）——请在浏览器窗口里点掉，我在这里等你');
-        patch({ phase: 'WAIT_VERIFY', verifyHint: vfy.slice(0, 90), notice: '智慧树要求人机验证：请在浏览器窗口点掉「请完成安全验证」，点完自动继续' });
+        patch({
+          phase: 'WAIT_VERIFY',
+          verifyHint: vfy.slice(0, 90),
+          notice: '智慧树要求人机验证：请在浏览器窗口点掉「请完成安全验证」，点完自动继续',
+        });
       }
       if (!stopped) setTimeout(loop, 2000);
       return;
@@ -770,30 +1272,52 @@ async function loop() {
     const plan = decide(
       { video: st.video, dialog: st.dialog },
       {
-        lastVideoKey, lastCt, endedLogged, stallTicks, frozenCt, frozenTicks,
-        dialogNotified, pageInfoDumped, noVideoTicks, lastVideoSwitchAt, lastPhase,
+        lastVideoKey,
+        lastCt,
+        endedLogged,
+        stallTicks,
+        frozenCt,
+        frozenTicks,
+        dialogNotified,
+        pageInfoDumped,
+        noVideoTicks,
+        lastVideoSwitchAt,
+        lastPhase,
       },
-      { userPaused, autoAnswer, autoAdvance },
+      { userPaused, autoAnswer, autoAdvance }
     );
     ({
-      lastVideoKey, lastCt, endedLogged, stallTicks, frozenCt, frozenTicks,
-      dialogNotified, pageInfoDumped, noVideoTicks, lastVideoSwitchAt, lastPhase,
+      lastVideoKey,
+      lastCt,
+      endedLogged,
+      stallTicks,
+      frozenCt,
+      frozenTicks,
+      dialogNotified,
+      pageInfoDumped,
+      noVideoTicks,
+      lastVideoSwitchAt,
+      lastPhase,
     } = plan.mem);
     for (const p of plan.patches) patch(p);
     for (const l of plan.logs) log(l.kind, l.msg);
     for (const e of plan.effects) await runEffect(e, st);
     // 章节测试在后台跑，不挡住主循环（视频还在播，弹题也还要答）
-    if (!quizBusy) { const pending = maybeAutoQuiz(); if (pending && pending.catch) pending.catch(() => {}); }
-    if (Date.now() - lastCookieSaveAt > 180000) { lastCookieSaveAt = Date.now(); await persistLogin('定期'); }
+    if (!quizBusy) {
+      const pending = maybeAutoQuiz();
+      if (pending && pending.catch) pending.catch(() => {});
+    }
+    if (Date.now() - lastCookieSaveAt > 180000) {
+      lastCookieSaveAt = Date.now();
+      await persistLogin('定期');
+    }
   } catch (e) {
-    log('err', '主循环异常（已忽略）：' + String(e && e.message || e).slice(0, 200));
+    log('err', '主循环异常（已忽略）：' + String((e && e.message) || e).slice(0, 200));
   }
   if (!stopped) setTimeout(loop, 1000);
 }
 
 /* ================= 指令 ================= */
-
-
 
 /* ========== 页面丢失自愈 ========== */
 let noVideoTicks = 0;
@@ -810,7 +1334,10 @@ async function recoverPage() {
       target = await ctx.newPage();
       await target.goto(lastStudyUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     }
-    if (!target) { log('warn', '没有可以恢复的页面，等你手动点进课程'); return; }
+    if (!target) {
+      log('warn', '没有可以恢复的页面，等你手动点进课程');
+      return;
+    }
     setPage(target);
     await sleep(2500);
     saveUrl(page.url());
@@ -820,7 +1347,7 @@ async function recoverPage() {
     patch({ phase: 'PLAYING', pickHint: '', notice: '' });
     log('ok', '页面已恢复：' + page.url().slice(0, 100));
   } catch (e) {
-    log('warn', '恢复页面失败：' + String(e && e.message || e).slice(0, 140));
+    log('warn', '恢复页面失败：' + String((e && e.message) || e).slice(0, 140));
   }
 }
 
@@ -841,27 +1368,51 @@ async function listCourses(notify) {
     await tab.goto(LEARN_HOME, { waitUntil: 'domcontentloaded', timeout: 60000 });
     let found = false;
     for (let i = 0; i < 25; i++) {
-      const n = await tab.locator('.item-left-course').count().catch(() => 0);
-      if (n > 0) { found = true; break; }
+      const n = await tab
+        .locator('.item-left-course')
+        .count()
+        .catch(() => 0);
+      if (n > 0) {
+        found = true;
+        break;
+      }
       await sleep(1000);
     }
     if (!found) {
-      dump('learnhome-fail-' + Date.now() + '.json', JSON.stringify({ url: tab.url(), text: (await tab.evaluate(() => document.body.innerText || '')).slice(0, 1200) }, null, 2));
+      dump(
+        'learnhome-fail-' + Date.now() + '.json',
+        JSON.stringify(
+          { url: tab.url(), text: (await tab.evaluate(() => document.body.innerText || '')).slice(0, 1200) },
+          null,
+          2
+        )
+      );
       await shot('learnhome-fail-' + Date.now() + '.png');
       throw new Error('学堂页面里没找到课程卡片（可能没登录或页面改版），已存 data/debug 供排查');
     }
     const list = await probe.readCourseList(tab);
-    if (list.length) { courses = list; coursesAt = Date.now(); }
+    if (list.length) {
+      courses = list;
+      coursesAt = Date.now();
+    }
     if (notify) patch({ courses, coursesAt });
-    log('ok', '读到 ' + list.length + ' 门课：' + list.map((c) => c.name + (c.pct != null ? '（' + c.pct + '%）' : '')).join('、'));
+    log(
+      'ok',
+      '读到 ' +
+        list.length +
+        ' 门课：' +
+        list.map((c) => c.name + (c.pct != null ? '（' + c.pct + '%）' : '')).join('、')
+    );
     return list;
   } catch (e) {
-    log('warn', '读课程列表失败：' + String(e && e.message || e).slice(0, 160));
+    log('warn', '读课程列表失败：' + String((e && e.message) || e).slice(0, 160));
     if (notify) patch({ notice: '课程列表没读到，可能是网络慢或没登录，过一会儿再点「刷新」' });
     return courses;
   } finally {
     if (tab) helperPages.delete(tab);
-    try { if (tab && !tab.isClosed()) await tab.close(); } catch {}
+    try {
+      if (tab && !tab.isClosed()) await tab.close();
+    } catch {}
   }
 }
 
@@ -878,14 +1429,21 @@ async function switchCourse(index) {
 
 async function switchCourseInner(index) {
   const n = Number(index);
-  if (!Number.isInteger(n) || n < 0) { log('warn', '课程序号不对'); return false; }
+  if (!Number.isInteger(n) || n < 0) {
+    log('warn', '课程序号不对');
+    return false;
+  }
   try {
     if (!courses.length) await listCourses(false);
     const want = courses[n];
-    if (!want) { patch({ notice: '没有这门课，先点「刷新课程」' }); return false; }
+    if (!want) {
+      patch({ notice: '没有这门课，先点「刷新课程」' });
+      return false;
+    }
     // 选的就是当前在听的课：什么都不做（以前会重新点卡片、把播放页换成新标签 → 视频回退）
     const curName = (courseInfo && courseInfo.name) || '';
-    const sameName = !!want.name && !!curName && (want.name === curName || curName.includes(want.name) || want.name.includes(curName));
+    const sameName =
+      !!want.name && !!curName && (want.name === curName || curName.includes(want.name) || want.name.includes(curName));
     if (sameName && lessons.length) {
       log('info', '你选的就是当前在听的「' + want.name + '」，保持不动');
       patch({ phase: 'PLAYING', pickHint: '', notice: '已经在听「' + want.name + '」，不用切' });
@@ -903,13 +1461,22 @@ async function switchCourseInner(index) {
     await page.goto(LEARN_HOME, { waitUntil: 'domcontentloaded', timeout: 60000 });
     let ok = false;
     for (let i = 0; i < 25; i++) {
-      if (await page.locator('.item-left-course .courseName').count().catch(() => 0)) { ok = true; break; }
+      if (
+        await page
+          .locator('.item-left-course .courseName')
+          .count()
+          .catch(() => 0)
+      ) {
+        ok = true;
+        break;
+      }
       await sleep(1000);
     }
     if (!ok) throw new Error('学堂页面没加载出课程卡片');
     const nameEl = page.locator('.item-left-course .courseName').nth(n);
     const shown = (await nameEl.innerText().catch(() => '')).trim();
-    if (shown && want.name && !shown.startsWith(want.name.slice(0, 6))) log('warn', '第 ' + (n + 1) + ' 张卡片是「' + shown + '」，不是「' + want.name + '」，按页面顺序点');
+    if (shown && want.name && !shown.startsWith(want.name.slice(0, 6)))
+      log('warn', '第 ' + (n + 1) + ' 张卡片是「' + shown + '」，不是「' + want.name + '」，按页面顺序点');
     await nameEl.scrollIntoViewIfNeeded();
     const box = await nameEl.boundingBox();
     if (!box) throw new Error('课程卡片不可见');
@@ -927,10 +1494,18 @@ async function switchCourseInner(index) {
       patch({ phase: 'PLAYING', pickHint: '', notice: '切课没成功，可能被别的弹窗挡住了，再点一次试试' });
       return false;
     }
-    if (navTab && navTab !== target && !navTab.isClosed()) { try { await navTab.close(); } catch {} }
+    if (navTab && navTab !== target && !navTab.isClosed()) {
+      try {
+        await navTab.close();
+      } catch {}
+    }
     for (const x of ctx.pages()) {
       if (x === target || x.isClosed() || helperPages.has(x)) continue;
-      if (/stuStudy/i.test(x.url())) { try { await x.close(); } catch {} }
+      if (/stuStudy/i.test(x.url())) {
+        try {
+          await x.close();
+        } catch {}
+      }
     }
     setPage(target);
     await sleep(3000);
@@ -945,7 +1520,7 @@ async function switchCourseInner(index) {
     log('ok', '已切到课程「' + (want.name || '') + '」');
     return true;
   } catch (e) {
-    log('err', '切换课程失败：' + String(e && e.message || e).slice(0, 200));
+    log('err', '切换课程失败：' + String((e && e.message) || e).slice(0, 200));
     patch({ phase: 'PLAYING', pickHint: '', notice: '切换课程没成功，请再试一次' });
     return false;
   }
@@ -957,23 +1532,60 @@ async function probeVerify() {
   const out = { url: page && !page.isClosed() ? page.url() : '', frames: [], iframes: [], boxes: [] };
   try {
     const main = page.mainFrame();
-    out.iframes = await main.evaluate(() => Array.from(document.querySelectorAll('iframe')).map((f) => {
-      const r = f.getBoundingClientRect();
-      return { src: (f.getAttribute('src') || '').slice(0, 200), cls: f.className, id: f.id, w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.left), y: Math.round(r.top), vis: r.width > 0 && r.height > 0 };
-    }));
+    out.iframes = await main.evaluate(() =>
+      Array.from(document.querySelectorAll('iframe')).map((f) => {
+        const r = f.getBoundingClientRect();
+        return {
+          src: (f.getAttribute('src') || '').slice(0, 200),
+          cls: f.className,
+          id: f.id,
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          vis: r.width > 0 && r.height > 0,
+        };
+      })
+    );
     out.boxes = await main.evaluate(() => {
-      const sels = ['.el-dialog__wrapper', '.el-dialog', '[class*="verify"]', '[class*="captcha"]', '[class*="yidun"]', '[class*="geetest"]', '[class*="nc_"]', '[id*="captcha"]', '[id*="verify"]'];
-      const seen = new Set(); const arr = [];
-      for (const s of sels) for (const e of document.querySelectorAll(s)) {
-        if (seen.has(e)) continue; seen.add(e);
-        const r = e.getBoundingClientRect();
-        arr.push({ sel: s, cls: (e.className || '').toString().slice(0, 120), id: e.id, w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.left), y: Math.round(r.top), text: (e.innerText || '').replace(/\s+/g, ' ').slice(0, 80) });
-      }
+      const sels = [
+        '.el-dialog__wrapper',
+        '.el-dialog',
+        '[class*="verify"]',
+        '[class*="captcha"]',
+        '[class*="yidun"]',
+        '[class*="geetest"]',
+        '[class*="nc_"]',
+        '[id*="captcha"]',
+        '[id*="verify"]',
+      ];
+      const seen = new Set();
+      const arr = [];
+      for (const s of sels)
+        for (const e of document.querySelectorAll(s)) {
+          if (seen.has(e)) continue;
+          seen.add(e);
+          const r = e.getBoundingClientRect();
+          arr.push({
+            sel: s,
+            cls: (e.className || '').toString().slice(0, 120),
+            id: e.id,
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            x: Math.round(r.left),
+            y: Math.round(r.top),
+            text: (e.innerText || '').replace(/\s+/g, ' ').slice(0, 80),
+          });
+        }
       return arr.slice(0, 60);
     });
-  } catch (e) { out.err = String(e && e.message || e); }
+  } catch (e) {
+    out.err = String((e && e.message) || e);
+  }
   for (const f of page.frames()) {
-    try { out.frames.push({ url: f.url().slice(0, 160), name: f.name() }); } catch {}
+    try {
+      out.frames.push({ url: f.url().slice(0, 160), name: f.name() });
+    } catch {}
   }
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   dump('verifyprobe-' + ts + '.json', JSON.stringify(out, null, 1));
@@ -1009,7 +1621,8 @@ async function probeLearnHome() {
       const links = [];
       for (const a of document.querySelectorAll('a[href]')) {
         const h = a.href || '';
-        if (/recruitAndCourseId|stuStudy|course/i.test(h)) links.push({ text: txt(a).slice(0, 60), href: h.slice(0, 300) });
+        if (/recruitAndCourseId|stuStudy|course/i.test(h))
+          links.push({ text: txt(a).slice(0, 60), href: h.slice(0, 300) });
       }
       const cards = [];
       for (const el of document.querySelectorAll('[class*="course" i], [class*="card" i], li')) {
@@ -1017,12 +1630,30 @@ async function probeLearnHome() {
         if (!t || t.length > 300) continue;
         const r = el.getBoundingClientRect();
         if (r.width < 80 || r.height < 40) continue;
-        cards.push({ tag: el.tagName, cls: String(el.className || '').slice(0, 100), text: t.slice(0, 160), href: (el.querySelector('a[href]') || {}).href || '' });
+        cards.push({
+          tag: el.tagName,
+          cls: String(el.className || '').slice(0, 100),
+          text: t.slice(0, 160),
+          href: (el.querySelector('a[href]') || {}).href || '',
+        });
       }
-      const res = performance.getEntriesByType('resource').map((e) => e.name).filter((u) => /course|recruit|study|learn|home/i.test(u)).slice(0, 80);
+      const res = performance
+        .getEntriesByType('resource')
+        .map((e) => e.name)
+        .filter((u) => /course|recruit|study|learn|home/i.test(u))
+        .slice(0, 80);
       const ls = {};
-      try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); const v = localStorage.getItem(k); if (v && v.length < 3000 && /course|recruit|study|user/i.test(k)) ls[k] = v.slice(0, 1500); } } catch {}
-      const cookieNames = document.cookie.split(';').map((x) => x.trim().split('=')[0]).filter(Boolean);
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          const v = localStorage.getItem(k);
+          if (v && v.length < 3000 && /course|recruit|study|user/i.test(k)) ls[k] = v.slice(0, 1500);
+        }
+      } catch {}
+      const cookieNames = document.cookie
+        .split(';')
+        .map((x) => x.trim().split('=')[0])
+        .filter(Boolean);
       return { links: links.slice(0, 60), cards: cards.slice(0, 60), res, ls, cookieNames };
     });
     /* 试验：真实鼠标点第一张课程卡片，看它会把我们带到哪里 */
@@ -1038,18 +1669,30 @@ async function probeLearnHome() {
           log('debug', '探针：点了课程卡片「' + nm + '」，等跳转…');
           await sleep(8000);
           const after = ctx.pages().filter((x) => !x.isClosed());
-          const fresh = after.find((x) => !before.includes(x.url())) || after.find((x) => /stuStudy|course/i.test(x.url()));
-          log('debug', '探针：点击后标签页 ' + after.length + ' 个，URL=' + after.map((x) => x.url().slice(0, 120)).join(' | '));
+          const fresh =
+            after.find((x) => !before.includes(x.url())) || after.find((x) => /stuStudy|course/i.test(x.url()));
+          log(
+            'debug',
+            '探针：点击后标签页 ' + after.length + ' 个，URL=' + after.map((x) => x.url().slice(0, 120)).join(' | ')
+          );
           if (fresh && fresh !== tab) {
             const fu = fresh.url();
             log('debug', '探针：新标签页 URL=' + fu);
             await sleep(3000);
-            try { dump('learnhome-afterclick' + '.html', await fresh.content()); } catch {}
-            const info = await fresh.evaluate(() => ({ url: location.href, text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 800) }));
+            try {
+              dump('learnhome-afterclick' + '.html', await fresh.content());
+            } catch {}
+            const info = await fresh.evaluate(() => ({
+              url: location.href,
+              text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 800),
+            }));
             dump('learnhome-afterclick.json', JSON.stringify(info, null, 2));
             /* 探针绝不关页面：曾经因此把主播放页关掉，导致主循环报「页面已关闭」 */
           } else {
-            const info = await tab.evaluate(() => ({ url: location.href, text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 800) }));
+            const info = await tab.evaluate(() => ({
+              url: location.href,
+              text: (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 800),
+            }));
             log('debug', '探针：点完后当前页 URL=' + info.url);
             dump('learnhome-afterclick.json', JSON.stringify(info, null, 2));
             dump('learnhome-afterclick.html', await tab.content());
@@ -1059,23 +1702,32 @@ async function probeLearnHome() {
         log('warn', '探针：没找到课程卡片');
       }
     } catch (e) {
-      log('warn', '探针：点课程卡片测试失败 ' + String(e && e.message || e).slice(0, 160));
+      log('warn', '探针：点课程卡片测试失败 ' + String((e && e.message) || e).slice(0, 160));
     }
 
     const payload = { url, first, ...report };
     const name = 'learnhome-' + new Date().toISOString().replace(/[:.]/g, '-');
     dump(name + '.json', JSON.stringify(payload, null, 2));
-    try { dump(name + '.html', await tab.content()); } catch {}
-    log('ok', '探针：学堂页已存盘 ' + name + '.json（入口 ' + report.cards.length + ' 个、链接 ' + report.links.length + ' 条）');
+    try {
+      dump(name + '.html', await tab.content());
+    } catch {}
+    log(
+      'ok',
+      '探针：学堂页已存盘 ' + name + '.json（入口 ' + report.cards.length + ' 个、链接 ' + report.links.length + ' 条）'
+    );
   } catch (e) {
-    log('err', '探针失败：' + String(e && e.message || e).slice(0, 200));
+    log('err', '探针失败：' + String((e && e.message) || e).slice(0, 200));
   } finally {
-    try { if (tab && !tab.isClosed()) await tab.close(); } catch {}
+    try {
+      if (tab && !tab.isClosed()) await tab.close();
+    } catch {}
   }
 }
 
 /* ========== 章节测试（平时测试） ========== */
-function quizListNow() { return quizListOf(quizChapters, quizzes, testDone); }
+function quizListNow() {
+  return quizListOf(quizChapters, quizzes, testDone);
+}
 
 /** 跑一章的平时测试：跑之前先落「正在做」，避免重启后又挑同一章 */
 async function runQuiz(key) {
@@ -1086,7 +1738,10 @@ async function runQuiz(key) {
   quizBusy = true;
   quizzes[key] = { ...(quizzes[key] || {}), status: 'doing', title, at: Date.now() };
   saveQuizzes(DATA, quizzes);
-  patch({ quizzes: quizListNow(), quiz: { running: true, key, title, i: 0, n: null, answered: 0, strategy: '', last: null, result: null, error: '' } });
+  patch({
+    quizzes: quizListNow(),
+    quiz: { running: true, key, title, i: 0, n: null, answered: 0, strategy: '', last: null, result: null, error: '' },
+  });
   log('info', '开始做「' + title + '」的章节测试');
   try {
     const res = await quizRunner.run(key);
@@ -1108,7 +1763,10 @@ async function runQuiz(key) {
       if (res.chapter && res.chapter !== key) testDone[res.chapter] = true;
       testDone[key] = true;
       const scoreText = res.score == null ? '' : '（得分 ' + res.score + (res.total ? '/' + res.total : '') + '）';
-      patch({ quiz: { running: false, result: null }, notice: '章节测试「' + (res.title || title) + '」之前已经交过了' + scoreText + '，跳过' });
+      patch({
+        quiz: { running: false, result: null },
+        notice: '章节测试「' + (res.title || title) + '」之前已经交过了' + scoreText + '，跳过',
+      });
       log('ok', '章节测试「' + (res.title || title) + '」之前已经交过' + scoreText + '，跳过');
     } else if (res && res.ok) {
       quizzes[key] = {
@@ -1122,16 +1780,35 @@ async function runQuiz(key) {
         at: Date.now(),
         note: res.note || '',
       };
-      const scoreText = res.score == null ? '已提交' : ('得分 ' + res.score + (res.total ? '/' + res.total : '') + ' 分');
-      patch({ quiz: { running: false, result: { score: res.score == null ? null : res.score, total: res.total == null ? null : res.total, text: scoreText } }, notice: '章节测试「' + (res.title || title) + '」' + scoreText });
+      const scoreText = res.score == null ? '已提交' : '得分 ' + res.score + (res.total ? '/' + res.total : '') + ' 分';
+      patch({
+        quiz: {
+          running: false,
+          result: {
+            score: res.score == null ? null : res.score,
+            total: res.total == null ? null : res.total,
+            text: scoreText,
+          },
+        },
+        notice: '章节测试「' + (res.title || title) + '」' + scoreText,
+      });
       log('ok', '章节测试「' + (res.title || title) + '」完成，' + scoreText);
     } else {
       quizzes[key] = { ...prev, status: 'failed', title, at: Date.now(), note: (res && res.note) || '没做完' };
-      patch({ quiz: { running: false, error: (res && res.note) || '没做完' }, notice: '章节测试「' + title + '」没自动完成：' + ((res && res.note) || '原因未知') });
+      patch({
+        quiz: { running: false, error: (res && res.note) || '没做完' },
+        notice: '章节测试「' + title + '」没自动完成：' + ((res && res.note) || '原因未知'),
+      });
       log('warn', '章节测试「' + title + '」没完成：' + ((res && res.note) || ''));
     }
   } catch (e) {
-    quizzes[key] = { ...(quizzes[key] || {}), status: 'failed', title, at: Date.now(), note: String((e && e.message) || e).slice(0, 120) };
+    quizzes[key] = {
+      ...(quizzes[key] || {}),
+      status: 'failed',
+      title,
+      at: Date.now(),
+      note: String((e && e.message) || e).slice(0, 120),
+    };
     patch({ quiz: { running: false, error: String((e && e.message) || e).slice(0, 120) } });
     log('err', '章节测试出错：' + String((e && e.message) || e).slice(0, 160));
   } finally {
@@ -1163,27 +1840,45 @@ async function doStart() {
     quizzes = loadQuizzes(DATA);
     lastQuizCheck = 0;
     patch({ quizAuto: autoQuiz, quizzes: quizListNow(), quiz: { running: false } });
-    if (!CONFIG.llm.apiKey) log('warn', '没有配置答题用的 API Key：弹题出现时会停下等你手动答（在 data/config.json 填 llm.apiKey 可启用自动答题）');
+    if (!CONFIG.llm.apiKey)
+      log(
+        'warn',
+        '没有配置答题用的 API Key：弹题出现时会停下等你手动答（在 data/config.json 填 llm.apiKey 可启用自动答题）'
+      );
     await launch();
-    if (!(await ensureLogin())) { stopped = true; return; }
-    if (!(await ensureCourse())) { stopped = true; return; }
+    if (!(await ensureLogin())) {
+      stopped = true;
+      return;
+    }
+    if (!(await ensureCourse())) {
+      stopped = true;
+      return;
+    }
     patch({ phase: 'PLAYING' });
     await readCourseInfo();
     await applyPlaying();
     log('ok', '开始听课');
     loop();
-    setTimeout(() => { try { listCourses(true); } catch {} }, 4000);
+    setTimeout(() => {
+      try {
+        listCourses(true);
+      } catch {}
+    }, 4000);
   } catch (e) {
-    patch({ phase: 'STOPPED', notice: '启动失败：' + String(e && e.message || e).slice(0, 120) });
-    log('err', '启动失败：' + String(e && e.message || e).slice(0, 300));
+    patch({ phase: 'STOPPED', notice: '启动失败：' + String((e && e.message) || e).slice(0, 120) });
+    log('err', '启动失败：' + String((e && e.message) || e).slice(0, 300));
   }
 }
 
 async function doQuit() {
   stopped = true;
   await persistLogin('退出前');
-  try { if (ctx) await ctx.close(); } catch {}
-  ctx = null; page = null; started = false;
+  try {
+    if (ctx) await ctx.close();
+  } catch {}
+  ctx = null;
+  page = null;
+  started = false;
   patch({ phase: 'STOPPED', video: { paused: true } });
   log('info', '已退出，断点已保存');
 }
@@ -1193,12 +1888,15 @@ process.on('message', async (m) => {
     if (!m || m.type !== 'cmd') return;
     if (m.cmd === 'start') {
       if (started) return;
-      stopped = false; userPaused = false;
+      stopped = false;
+      userPaused = false;
       await doStart();
     } else if (m.cmd === 'pause') {
       userPaused = true;
       patch({ phase: 'PAUSED' });
-      try { await pauseVideoQuiet(); } catch {}
+      try {
+        await pauseVideoQuiet();
+      } catch {}
       log('info', '已暂停');
     } else if (m.cmd === 'resume') {
       userPaused = false;
@@ -1208,7 +1906,18 @@ process.on('message', async (m) => {
     } else if (m.cmd === 'restart') {
       log('info', '正在重启…');
       await doQuit();
-      stopped = false; userPaused = false; started = false; questionPoints = []; lastVideoKey = ''; endedLogged = false; pageInfoDumped = false; verifyPending = false; verifySince = 0; patch({ verifyHint: '', pointsLoaded: false });
+      stopped = false;
+      userPaused = false;
+      started = false;
+      questionPoints = [];
+      lastVideoKey = '';
+      endedLogged = false;
+      pageInfoDumped = false;
+      verifyPending = false;
+      verifySince = 0;
+      qrAt = 0;
+      clearLoginUi();
+      patch({ verifyHint: '', pointsLoaded: false });
       await doStart();
     } else if (m.cmd === 'quit') {
       await doQuit();
@@ -1223,8 +1932,13 @@ process.on('message', async (m) => {
           await sleep(3000);
           ok = await clickLesson(code);
         }
-        if (ok) { await applyPlaying(); patch({ notice: '已切到 ' + code }); }
-        else { log('warn', '切换小节 ' + code + ' 没成功'); patch({ notice: '切到 ' + code + ' 没成功，可能被弹题或页面挡住了，再点一次试试' }); }
+        if (ok) {
+          await applyPlaying();
+          patch({ notice: '已切到 ' + code });
+        } else {
+          log('warn', '切换小节 ' + code + ' 没成功');
+          patch({ notice: '切到 ' + code + ' 没成功，可能被弹题或页面挡住了，再点一次试试' });
+        }
       }
     } else if (m.cmd === 'courses') {
       await listCourses(true);
@@ -1239,7 +1953,8 @@ process.on('message', async (m) => {
       let key = m.data && m.data.key;
       if (key === '__retry') {
         // 手动重试：把失败状态清掉，让自动挑章重新看上它
-        for (const k of Object.keys(quizzes)) if (quizzes[k] && quizzes[k].status === 'failed') quizzes[k].status = 'todo';
+        for (const k of Object.keys(quizzes))
+          if (quizzes[k] && quizzes[k].status === 'failed') quizzes[k].status = 'todo';
         saveQuizzes(DATA, quizzes);
         patch({ quizzes: quizListNow() });
         key = '';
@@ -1249,32 +1964,59 @@ process.on('message', async (m) => {
         const target = pickChapterToQuiz(quizChapters, quizListNow(), cur && cur.chapter);
         key = target && target.key;
       }
-      if (!key) { log('info', '没有需要做的章节测试了'); patch({ notice: '没有需要做的章节测试了（要么没看完，要么都做过了）' }); }
-      else if (quizBusy) { patch({ notice: '正在做另一份测试，等这份做完再试' }); }
-      else if (m.data && m.data.dry) {
+      if (!key) {
+        log('info', '没有需要做的章节测试了');
+        patch({ notice: '没有需要做的章节测试了（要么没看完，要么都做过了）' });
+      } else if (quizBusy) {
+        patch({ notice: '正在做另一份测试，等这份做完再试' });
+      } else if (m.data && m.data.dry) {
         // 调试用：把整份试卷填一遍但不点提交（答案会被平台暂存，之后正式跑会整份覆盖）
         quizBusy = true;
-        quizRunner.run(key, { noSubmit: true })
+        quizRunner
+          .run(key, { noSubmit: true })
           .then((r) => log('info', '干跑完成（没有提交）：' + JSON.stringify(r)))
           .catch((e) => log('err', '干跑出错：' + String((e && e.message) || e).slice(0, 160)))
-          .finally(() => { quizBusy = false; });
-      }
-      else runQuiz(key).catch((e) => log('err', '手动做测试失败：' + String((e && e.message) || e).slice(0, 160)));
+          .finally(() => {
+            quizBusy = false;
+          });
+      } else runQuiz(key).catch((e) => log('err', '手动做测试失败：' + String((e && e.message) || e).slice(0, 160)));
+    } else if (m.cmd === 'showBrowser') {
+      await showBrowserWindow();
+    } else if (m.cmd === 'hideBrowser') {
+      const ok = await hideBrowserWindow('你的操作');
+      if (ok) patch({ notice: '浏览器窗口已隐藏（它还在后台继续听课）' });
+    } else if (m.cmd === 'refreshQr') {
+      await refreshQr('你点的刷新');
     } else if (m.cmd === 'settings') {
       if (m.data && typeof m.data.autoAnswer === 'boolean') autoAnswer = m.data.autoAnswer;
       if (m.data && typeof m.data.autoAdvance === 'boolean') autoAdvance = m.data.autoAdvance;
-      if (m.data && typeof m.data.quizAuto === 'boolean') { autoQuiz = m.data.quizAuto; patch({ quizAuto: autoQuiz }); }
-      if (m.data && typeof m.data.autoAnswer !== 'boolean' && typeof m.data.autoAdvance !== 'boolean' && typeof m.data.quizAuto !== 'boolean') autoAnswer = !!m.data;
+      if (m.data && typeof m.data.quizAuto === 'boolean') {
+        autoQuiz = m.data.quizAuto;
+        patch({ quizAuto: autoQuiz });
+      }
+      if (
+        m.data &&
+        typeof m.data.autoAnswer !== 'boolean' &&
+        typeof m.data.autoAdvance !== 'boolean' &&
+        typeof m.data.quizAuto !== 'boolean'
+      )
+        autoAnswer = !!m.data;
       CONFIG = loadConfig();
-      patch({ answers: { auto: autoAnswer, advance: autoAdvance, strategy: CONFIG.llm && CONFIG.llm.apiKey ? 'llm' : 'random' } });
+      patch({
+        answers: {
+          auto: autoAnswer,
+          advance: autoAdvance,
+          strategy: CONFIG.llm && CONFIG.llm.apiKey ? 'llm' : 'random',
+        },
+      });
     }
   } catch (e) {
-    log('err', '指令处理失败：' + String(e && e.message || e).slice(0, 200));
+    log('err', '指令处理失败：' + String((e && e.message) || e).slice(0, 200));
   }
 });
 
-process.on('uncaughtException', (e) => log('err', '未捕获异常：' + String(e && e.message || e).slice(0, 200)));
-process.on('unhandledRejection', (e) => log('err', '未处理拒绝：' + String(e && e.message || e).slice(0, 200)));
+process.on('uncaughtException', (e) => log('err', '未捕获异常：' + String((e && e.message) || e).slice(0, 200)));
+process.on('unhandledRejection', (e) => log('err', '未处理拒绝：' + String((e && e.message) || e).slice(0, 200)));
 
 if (DEBUG) log('info', '调试模式已开启：弹窗结构/截图会存到 data/debug/');
 send({ type: 'ready' });

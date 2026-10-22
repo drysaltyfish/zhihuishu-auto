@@ -35,11 +35,21 @@ async function runLlmCheck() {
 const toggle = makeToggle(api, (msg, kind) => props.say(msg, kind));
 function toggleAuto() {
   if (!S.value) return;
-  toggle({ current: S.value.answers.auto, key: 'autoAnswer', on: '已开启自动答题', off: '已关闭自动答题（弹题时会暂停等你）' });
+  toggle({
+    current: S.value.answers.auto,
+    key: 'autoAnswer',
+    on: '已开启自动答题',
+    off: '已关闭自动答题（弹题时会暂停等你）',
+  });
 }
 function toggleAdvance() {
   if (!S.value) return;
-  toggle({ current: S.value.answers.advance, key: 'autoAdvance', on: '已开启：看完自动跳下一节', off: '已关闭自动跳节（看完会停下等你选）' });
+  toggle({
+    current: S.value.answers.advance,
+    key: 'autoAdvance',
+    on: '已开启：看完自动跳下一节',
+    off: '已关闭自动跳节（看完会停下等你选）',
+  });
 }
 const llmOn = computed(() => S.value.answers.strategy === 'llm');
 </script>
@@ -72,18 +82,24 @@ const llmOn = computed(() => S.value.answers.strategy === 'llm');
     </div>
 
     <div class="setrow">
-      <div style="min-width:0">
+      <div style="min-width: 0">
         <div class="sk">答题模型</div>
         <div class="ss" :class="{ okc: llmCheck.ok === true, badc: llmCheck.ok === false }" :title="llmCheck.text">
           {{ llmCheck.text || '点右边试一下模型通不通' }}
         </div>
       </div>
-      <button class="btn mini" :disabled="llmCheck.busy" @click="runLlmCheck">{{ llmCheck.busy ? '测试中…' : '测试模型' }}</button>
+      <button class="btn mini" :disabled="llmCheck.busy" @click="runLlmCheck">
+        {{ llmCheck.busy ? '测试中…' : '测试模型' }}
+      </button>
     </div>
 
     <div class="chiprow">
       <span class="chip" :class="llmOn ? 'ok' : 'warn'">策略 · {{ llmOn ? 'LLM 作答' : '随机（未配 Key）' }}</span>
-      <span class="chip">今日已答 {{ S.answers.count }} 题<template v-if="S.answers.right != null"> · 对 {{ S.answers.right }}</template></span>
+      <span class="chip"
+        >今日已答 {{ S.answers.count }} 题<template v-if="S.answers.right != null">
+          · 对 {{ S.answers.right }}</template
+        ></span
+      >
     </div>
   </section>
 </template>

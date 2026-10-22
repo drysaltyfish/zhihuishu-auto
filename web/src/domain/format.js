@@ -1,19 +1,34 @@
 export const PHASE_LABEL = {
-  IDLE: '空闲', LAUNCHING: '启动浏览器', WAIT_LOGIN: '等待登录',
-  COURSE_LIST: '拉取课程', COURSE_PICK: '选择课程', PLAYING: '播放中',
-  ARMED: '待命（等弹题）', ANSWERING: '答题中', PAUSED: '已暂停', STOPPED: '已退出',
-  WAIT_VERIFY: '等待人机验证', RECOVERING: '恢复页面', ENDED: '本节播完',
+  IDLE: '空闲',
+  LAUNCHING: '启动浏览器',
+  WAIT_LOGIN: '等待登录',
+  COURSE_LIST: '拉取课程',
+  COURSE_PICK: '选择课程',
+  PLAYING: '播放中',
+  ARMED: '待命（等弹题）',
+  ANSWERING: '答题中',
+  PAUSED: '已暂停',
+  STOPPED: '已退出',
+  WAIT_VERIFY: '等待人机验证',
+  RECOVERING: '恢复页面',
+  ENDED: '本节播完',
 };
 
-export function pctText(v) { return v === null || v === undefined ? '—' : v; }
+export function pctText(v) {
+  return v === null || v === undefined ? '—' : v;
+}
 
-export function barW(v) { return (v === null || v === undefined ? 0 : Math.max(0, Math.min(100, v))) + '%'; }
+export function barW(v) {
+  return (v === null || v === undefined ? 0 : Math.max(0, Math.min(100, v))) + '%';
+}
 
 /** 秒 → mm:ss / h:mm:ss；无值为 --:-- */
 export function fmtClock(sec) {
   if (sec === null || sec === undefined) return '--:--';
   const s = Math.max(0, Math.floor(sec));
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  const h = Math.floor(s / 3600),
+    m = Math.floor((s % 3600) / 60),
+    ss = s % 60;
   const p = (n) => String(n).padStart(2, '0');
   return h > 0 ? h + ':' + p(m) + ':' + p(ss) : p(m) + ':' + p(ss);
 }

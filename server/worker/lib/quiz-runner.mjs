@@ -13,14 +13,28 @@
  */
 import { QUIZ_PAPER, QUIZ_RESULT } from './quiz-scripts.mjs';
 import {
-  buildQuizPrompt, chooseLetters, fallbackIdxs, normalizeType, parsePaperMeta, parseResult, planSelection,
+  buildQuizPrompt,
+  chooseLetters,
+  fallbackIdxs,
+  normalizeType,
+  parsePaperMeta,
+  parseResult,
+  planSelection,
 } from './quiz-logic.mjs';
 
 export function createQuizRunner(deps) {
   const {
-    getPage, getCtx, readTree, log, patch, getLlm, askQuiz,
+    getPage,
+    getCtx,
+    readTree,
+    log,
+    patch,
+    getLlm,
+    askQuiz,
     sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-    dump = () => {}, shot = async () => {}, debug = false,
+    dump = () => {},
+    shot = async () => {},
+    debug = false,
   } = deps;
 
   let busy = false;
@@ -58,7 +72,10 @@ export function createQuizRunner(deps) {
       for (let i = 0; i < 24; i++) {
         await sleep(500);
         const cand = ctx.pages().find((p) => /onlineexamh5new|stuExamWeb/i.test(p.url()));
-        if (cand) { tab = cand; break; }
+        if (cand) {
+          tab = cand;
+          break;
+        }
       }
     }
     if (!tab) return { ok: false, note: '点了测试入口但没打开考试页' };
@@ -67,7 +84,10 @@ export function createQuizRunner(deps) {
       await tab.waitForSelector('.examPaper_subject', { timeout: 45000 });
     } catch {
       const body = await tab.evaluate(QUIZ_RESULT).catch(() => null);
-      if (debug) { dump('quiz-open-fail-' + Date.now() + '.txt', (body && body.bodyText) || '没有正文'); await shot('quiz-open-fail.png'); }
+      if (debug) {
+        dump('quiz-open-fail-' + Date.now() + '.txt', (body && body.bodyText) || '没有正文');
+        await shot('quiz-open-fail.png');
+      }
       return { ok: false, note: '考试页打开了但没加载出题目', tab };
     }
     return { ok: true, tab };
@@ -80,18 +100,14 @@ export function createQuizRunner(deps) {
     if (!clicks.length) return { ok: true, clicked: 0 };
     let clickedTimes = 0;
     for (let round = 0; round < 2; round++) {
-      clicks = round === 0
-        ? planSelection(question.options, wantIdxs)
-        : await currentMismatch(tab, want);
+      clicks = round === 0 ? planSelection(question.options, wantIdxs) : await currentMismatch(tab, want);
       if (!clicks.length) break;
       const res = await clickOptions(tab, clicks);
       clickedTimes += res.clicked;
       if (!res.ok) return { ok: false, why: res.why, clicked: clickedTimes };
     }
     const now = await view(tab);
-    const bad = now && now.question
-      ? now.question.options.some((o, i) => !!o.checked !== want.has(i))
-      : true;
+    const bad = now && now.question ? now.question.options.some((o, i) => !!o.checked !== want.has(i)) : true;
     return { ok: !bad, clicked: clickedTimes, why: bad ? '点了但勾选状态不对' : '' };
   }
 
@@ -100,7 +116,9 @@ export function createQuizRunner(deps) {
     const now = await view(tab);
     if (!now || !now.question) return [];
     const out = [];
-    now.question.options.forEach((o, i) => { if (!!o.checked !== want.has(i)) out.push(i); });
+    now.question.options.forEach((o, i) => {
+      if (!!o.checked !== want.has(i)) out.push(i);
+    });
     return out;
   }
 
@@ -113,9 +131,22 @@ export function createQuizRunner(deps) {
       const el = boxes.nth(i);
       await el.scrollIntoViewIfNeeded().catch(() => {});
       let clicked = false;
-      try { await el.click({ timeout: 5000 }); clicked = true; } catch {}
-      if (!clicked) { try { await el.locator('.label').first().click({ timeout: 3000 }); clicked = true; } catch {} }
-      if (!clicked) { try { await el.locator('.node_detail').first().click({ timeout: 3000 }); clicked = true; } catch {} }
+      try {
+        await el.click({ timeout: 5000 });
+        clicked = true;
+      } catch {}
+      if (!clicked) {
+        try {
+          await el.locator('.label').first().click({ timeout: 3000 });
+          clicked = true;
+        } catch {}
+      }
+      if (!clicked) {
+        try {
+          await el.locator('.node_detail').first().click({ timeout: 3000 });
+          clicked = true;
+        } catch {}
+      }
       if (!clicked) return { ok: false, why: '选项点不动', clicked };
       clicked += 1;
       await sleep(220);
@@ -137,7 +168,11 @@ export function createQuizRunner(deps) {
       const btn = loc.first();
       const disabled = await btn.isDisabled().catch(() => false);
       if (disabled) return { ok: false, why: '「下一题」是禁用的' };
-      try { await btn.click({ timeout: 4000 }); } catch { continue; }
+      try {
+        await btn.click({ timeout: 4000 });
+      } catch {
+        continue;
+      }
       for (let i = 0; i < 12; i++) {
         await sleep(300);
         const now = await view(tab);
@@ -158,16 +193,31 @@ export function createQuizRunner(deps) {
       const prompt = buildQuizPrompt(meta, question);
       const res = await askQuiz(getLlm(), prompt);
       if (res && res.ok) {
-        const picked = chooseLetters({ text: res.raw || res.content || '', question, optionCount: question.options.length });
+        const picked = chooseLetters({
+          text: res.raw || res.content || '',
+          question,
+          optionCount: question.options.length,
+        });
         idxs = picked.idxs;
         why = picked.why;
         if (!idxs.length) {
           // 模型写了长篇解释、里面字母太多没法确定答案：追一句「只给字母」再问一次
           log('info', '第 ' + question.num + ' 题模型回复没解析出字母，再问一次（只许回字母）');
-          const retry = await askQuiz(getLlm(), prompt + '\n\n只回复选项字母（如 B 或 AC），不要任何解释、标点或空格。（上一次的回复无法解析，请只回字母。）');
+          const retry = await askQuiz(
+            getLlm(),
+            prompt +
+              '\n\n只回复选项字母（如 B 或 AC），不要任何解释、标点或空格。（上一次的回复无法解析，请只回字母。）'
+          );
           if (retry && retry.ok) {
-            const p2 = chooseLetters({ text: retry.raw || retry.content || '', question, optionCount: question.options.length });
-            if (p2.idxs.length) { idxs = p2.idxs; why = '重问一次：' + p2.why; }
+            const p2 = chooseLetters({
+              text: retry.raw || retry.content || '',
+              question,
+              optionCount: question.options.length,
+            });
+            if (p2.idxs.length) {
+              idxs = p2.idxs;
+              why = '重问一次：' + p2.why;
+            }
           }
         }
       } else {
@@ -204,8 +254,15 @@ export function createQuizRunner(deps) {
       for (const i of todo) {
         const cnt = await cards.count().catch(() => 0);
         if (i >= cnt) break;
-        await cards.nth(i).scrollIntoViewIfNeeded().catch(() => {});
-        try { await cards.nth(i).click({ timeout: 4000 }); } catch { continue; }
+        await cards
+          .nth(i)
+          .scrollIntoViewIfNeeded()
+          .catch(() => {});
+        try {
+          await cards.nth(i).click({ timeout: 4000 });
+        } catch {
+          continue;
+        }
         await sleep(600);
         const v2 = await view(tab);
         if (!v2 || !v2.question) continue;
@@ -229,7 +286,11 @@ export function createQuizRunner(deps) {
     for (const loc of [byText('提交作业'), tab.getByText('提交作业', { exact: false })]) {
       const cnt = await loc.count().catch(() => 0);
       if (!cnt) continue;
-      try { await loc.first().click({ timeout: 4000 }); clicked = true; break; } catch {}
+      try {
+        await loc.first().click({ timeout: 4000 });
+        clicked = true;
+        break;
+      } catch {}
     }
     if (!clicked) return { ok: false, why: '没找到「提交作业」按钮' };
     await sleep(900);
@@ -288,7 +349,14 @@ export function createQuizRunner(deps) {
       // 平台显示这份卷子已经交过（打开的是「查看」页）：直接认下来，绝不重答
       if (first.paper.review) {
         const parsed = parseResult(first.paper.bodyText);
-        log('ok', '「' + (meta.title || key) + '」平台显示已经交过了' + (parsed.score == null ? '' : '（得分 ' + parsed.score + '）') + '，跳过');
+        log(
+          'ok',
+          '「' +
+            (meta.title || key) +
+            '」平台显示已经交过了' +
+            (parsed.score == null ? '' : '（得分 ' + parsed.score + '）') +
+            '，跳过'
+        );
         return {
           ok: true,
           status: 'already',
@@ -304,38 +372,88 @@ export function createQuizRunner(deps) {
       const chapterName = meta.chapter || key;
       const title = meta.title || first.paper.title || key + ' 平时测试';
       log('ok', '试卷已打开：' + title + '（' + total + ' 题' + (meta.total ? '，' + meta.total + ' 分' : '') + '）');
-      patch({ quiz: { running: true, key, title, i: 0, n: total, answered: 0, strategy: '', last: null, result: null, error: '' } });
+      patch({
+        quiz: {
+          running: true,
+          key,
+          title,
+          i: 0,
+          n: total,
+          answered: 0,
+          strategy: '',
+          last: null,
+          result: null,
+          error: '',
+        },
+      });
 
       // 逐题作答：靠「下一题」前进（每题点选项只是勾选，点下一题才保存）
       let answered = 0;
       for (let step = 0; step < total; step++) {
         const v = await view(tab);
-        if (!v || !v.question) { log('warn', '第 ' + (step + 1) + ' 题读不到，先停下'); break; }
+        if (!v || !v.question) {
+          log('warn', '第 ' + (step + 1) + ' 题读不到，先停下');
+          break;
+        }
         const type = normalizeType(v.question.type);
         const prompt = buildQuizPrompt({ courseName: tree.courseName, title }, v.question);
-        if (debug) dump('quiz-q' + (step + 1) + '-' + Date.now() + '.json', JSON.stringify({ meta, question: v.question, prompt }, null, 2));
+        if (debug)
+          dump(
+            'quiz-q' + (step + 1) + '-' + Date.now() + '.json',
+            JSON.stringify({ meta, question: v.question, prompt }, null, 2)
+          );
         patch({ quiz: { running: true, key, title, i: step + 1, n: total, answered, strategy: '', last: null } });
-        log('info', '第 ' + (step + 1) + '/' + total + ' 题（' + (v.question.type || '题目') + '）' + (type === 'multi' ? ' 多选' : ''));
+        log(
+          'info',
+          '第 ' +
+            (step + 1) +
+            '/' +
+            total +
+            ' 题（' +
+            (v.question.type || '题目') +
+            '）' +
+            (type === 'multi' ? ' 多选' : '')
+        );
 
         const a = await answerCurrent(tab, v.question, { courseName: tree.courseName, title });
-        if (!a.ok) { log('warn', '第 ' + (step + 1) + ' 题没答上：' + a.why); }
+        if (!a.ok) {
+          log('warn', '第 ' + (step + 1) + ' 题没答上：' + a.why);
+        }
         const lettersText = (a.letters || []).join('') || '?';
-        log(a.ok ? 'ok' : 'warn', '选 ' + lettersText + '（' + (a.strategy === 'llm' ? '模型' : '兜底') + (a.mwhy ? '，' + a.mwhy : '') + '）');
+        log(
+          a.ok ? 'ok' : 'warn',
+          '选 ' + lettersText + '（' + (a.strategy === 'llm' ? '模型' : '兜底') + (a.mwhy ? '，' + a.mwhy : '') + '）'
+        );
         patch({
           quiz: {
-            running: true, key, title, i: step + 1, n: total,
+            running: true,
+            key,
+            title,
+            i: step + 1,
+            n: total,
             answered: answered + (a.ok ? 1 : 0),
             strategy: a.strategy,
-            last: { num: v.question.num, type: v.question.type || '', chosen: a.letters || [], result: a.ok ? '已选' : '失败' },
+            last: {
+              num: v.question.num,
+              type: v.question.type || '',
+              chosen: a.letters || [],
+              result: a.ok ? '已选' : '失败',
+            },
           },
         });
         if (!a.ok) continue;
         answered += 1;
 
         const nx = await clickNext(tab);
-        if (nx.ok) { await sleep(500); continue; }
+        if (nx.ok) {
+          await sleep(500);
+          continue;
+        }
         // 最后一题：没有「下一题」或按钮禁用，直接跳出准备提交
-        if (/没翻页|禁用/.test(nx.why || '')) { log('info', '已经是最后一题'); break; }
+        if (/没翻页|禁用/.test(nx.why || '')) {
+          log('info', '已经是最后一题');
+          break;
+        }
         log('warn', '翻页失败：' + nx.why);
       }
 
@@ -344,7 +462,16 @@ export function createQuizRunner(deps) {
       if (!repaired.ok) {
         log('warn', '还有题目没答上（已答 ' + repaired.answered + '/' + total + '），为了不交白卷，先不提交');
         await shot('quiz-unfinished.png');
-        return { ok: false, status: 'failed', title, chapter: chapterName, count: total, total: meta.total || null, answered: repaired.answered, note: '有 ' + (total - repaired.answered) + ' 题没答上，没敢提交（可以手动进去补）' };
+        return {
+          ok: false,
+          status: 'failed',
+          title,
+          chapter: chapterName,
+          count: total,
+          total: meta.total || null,
+          answered: repaired.answered,
+          note: '有 ' + (total - repaired.answered) + ' 题没答上，没敢提交（可以手动进去补）',
+        };
       }
 
       if (noSubmit) {
@@ -367,12 +494,22 @@ export function createQuizRunner(deps) {
       const sub = await submitPaper(tab);
       if (!sub.ok) {
         log('warn', '提交没成功：' + (sub.why || ''));
-        return { ok: false, status: 'failed', title, chapter: chapterName, count: total, total: meta.total || null, answered: total, note: '答案都填了但提交没成功：' + (sub.why || '') };
+        return {
+          ok: false,
+          status: 'failed',
+          title,
+          chapter: chapterName,
+          count: total,
+          total: meta.total || null,
+          answered: total,
+          note: '答案都填了但提交没成功：' + (sub.why || ''),
+        };
       }
       const res = await tab.evaluate(QUIZ_RESULT).catch(() => null);
       const parsed = parseResult(res && res.bodyText);
       if (debug) dump('quiz-result-' + Date.now() + '.txt', (res && res.bodyText) || '');
-      const scoreText = parsed.score == null ? '已提交' : ('得分 ' + parsed.score + (parsed.total ? '/' + parsed.total : '') + ' 分');
+      const scoreText =
+        parsed.score == null ? '已提交' : '得分 ' + parsed.score + (parsed.total ? '/' + parsed.total : '') + ' 分';
       log('ok', '「' + title + '」提交完成：' + scoreText);
       return {
         ok: true,
@@ -389,10 +526,14 @@ export function createQuizRunner(deps) {
     } catch (e) {
       const msg = String((e && e.message) || e).slice(0, 160);
       log('err', '做章节测试时出错：' + msg);
-      if (tab) { if (debug) await shot('quiz-error.png'); }
+      if (tab) {
+        if (debug) await shot('quiz-error.png');
+      }
       return { ok: false, status: 'failed', note: '出错了：' + msg };
     } finally {
-      try { if (tab && !tab.isClosed()) await tab.close(); } catch {}
+      try {
+        if (tab && !tab.isClosed()) await tab.close();
+      } catch {}
       busy = false;
       patch({ quiz: { running: false } });
     }

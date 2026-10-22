@@ -35,7 +35,8 @@ function pick(name) {
       <template v-if="tab === 'logs'">
         <div v-if="!logs.length" class="empty-line">还没有日志</div>
         <div v-for="(l, i) in logs" :key="i" class="logline" :class="l.kind">
-          <span class="lt">{{ l.time }}</span><span class="lm">{{ l.msg }}</span>
+          <span class="lt">{{ l.time }}</span
+          ><span class="lm">{{ l.msg }}</span>
         </div>
       </template>
       <template v-else>

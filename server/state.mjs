@@ -21,7 +21,18 @@ export function initialState() {
     quizAuto: true,
     quizChapters: [],
     quizzes: [],
-    quiz: { running: false, key: '', title: '', i: 0, n: null, answered: 0, strategy: '', last: null, result: null, error: '' },
+    quiz: {
+      running: false,
+      key: '',
+      title: '',
+      i: 0,
+      n: null,
+      answered: 0,
+      strategy: '',
+      last: null,
+      result: null,
+      error: '',
+    },
     currentQid: null,
     nextQuestion: null,
     history: [],
@@ -38,7 +49,14 @@ export function initialState() {
 export function applyPatch(state, patch) {
   if (!patch || typeof patch !== 'object') return state;
   for (const [k, v] of Object.entries(patch)) {
-    if (v && typeof v === 'object' && !Array.isArray(v) && state[k] && typeof state[k] === 'object' && !Array.isArray(state[k])) {
+    if (
+      v &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      state[k] &&
+      typeof state[k] === 'object' &&
+      !Array.isArray(state[k])
+    ) {
       applyPatch(state[k], v);
     } else {
       state[k] = v;

@@ -24,7 +24,10 @@ test('push 记下时间/类型/内容，list 按顺序返回', () => {
 test('超过上限丢最旧的，界面不会越堆越长', () => {
   const ring = createLogRing({ max: 3 });
   for (const s of ['a', 'b', 'c', 'd']) ring.push('info', s);
-  assert.deepEqual(ring.list().map((r) => r.msg), ['b', 'c', 'd']);
+  assert.deepEqual(
+    ring.list().map((r) => r.msg),
+    ['b', 'c', 'd']
+  );
 });
 
 test('type 缺省为 info，null 内容变空串，超长截断 400', () => {
@@ -61,7 +64,11 @@ test('文件超过上限时清空重写，不无限增长', () => {
 
 test('每次都通知 onChange（SSE 靠它推日志）', () => {
   let n = 0;
-  const ring = createLogRing({ onChange: () => { n++; } });
+  const ring = createLogRing({
+    onChange: () => {
+      n++;
+    },
+  });
   ring.push('info', 'a');
   ring.push('info', 'b');
   assert.equal(n, 2);

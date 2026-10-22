@@ -13,8 +13,15 @@ function fakeRes() {
     statusCode: 0,
     headers: null,
     body: '',
-    writeHead(code, headers) { this.statusCode = code; this.headers = headers; this.headersSent = true; },
-    end(body) { this.body = body || ''; this.writableEnded = true; },
+    writeHead(code, headers) {
+      this.statusCode = code;
+      this.headers = headers;
+      this.headersSent = true;
+    },
+    end(body) {
+      this.body = body || '';
+      this.writableEnded = true;
+    },
     on() {},
   };
 }
@@ -24,7 +31,10 @@ function fakeReq(method, payload) {
   req.method = method;
   if (payload !== undefined) {
     const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    setImmediate(() => { req.emit('data', Buffer.from(text)); req.emit('end'); });
+    setImmediate(() => {
+      req.emit('data', Buffer.from(text));
+      req.emit('end');
+    });
   } else {
     setImmediate(() => req.emit('end'));
   }
@@ -36,11 +46,43 @@ function mk(routes, log = () => {}) {
 }
 
 const ROUTES = [
-  { path: '/api/state', methods: ['GET'], handler: ({ res }) => { res.writeHead(200); res.end('{"ok":true}'); } },
-  { path: '/api/start', methods: ['POST'], handler: ({ res, body, state }) => { res.writeHead(200); res.end(JSON.stringify({ body, phase: state.phase })); } },
-  { path: '/api/boom', methods: ['GET'], handler: () => { throw new Error('数据库密码是 xxx'); } },
-  { path: '/api/nope', methods: ['GET'], handler: () => { throw httpError(409, '任务还没开始', '先点「开始听课」'); } },
-  { path: '/api/teapot', methods: ['GET'], handler: () => { throw httpError(418, '我是茶壶'); } },
+  {
+    path: '/api/state',
+    methods: ['GET'],
+    handler: ({ res }) => {
+      res.writeHead(200);
+      res.end('{"ok":true}');
+    },
+  },
+  {
+    path: '/api/start',
+    methods: ['POST'],
+    handler: ({ res, body, state }) => {
+      res.writeHead(200);
+      res.end(JSON.stringify({ body, phase: state.phase }));
+    },
+  },
+  {
+    path: '/api/boom',
+    methods: ['GET'],
+    handler: () => {
+      throw new Error('数据库密码是 xxx');
+    },
+  },
+  {
+    path: '/api/nope',
+    methods: ['GET'],
+    handler: () => {
+      throw httpError(409, '任务还没开始', '先点「开始听课」');
+    },
+  },
+  {
+    path: '/api/teapot',
+    methods: ['GET'],
+    handler: () => {
+      throw httpError(418, '我是茶壶');
+    },
+  },
 ];
 
 test('未知接口 → 404 接口不存在', async () => {
@@ -94,7 +136,11 @@ test('坏 JSON 当空对象，handler 自己校验', async () => {
 test('普通异常 → 500 通用文案，不把内部细节丢给前端，但日志留证据', async () => {
   const logs = [];
   const res = fakeRes();
-  await mk(ROUTES, (kind, msg) => logs.push(kind + ':' + msg))(fakeReq('GET'), res, new URL('http://x/api/boom?t=' + TOKEN));
+  await mk(ROUTES, (kind, msg) => logs.push(kind + ':' + msg))(
+    fakeReq('GET'),
+    res,
+    new URL('http://x/api/boom?t=' + TOKEN)
+  );
   assert.equal(res.statusCode, 500);
   const b = JSON.parse(res.body);
   assert.equal(b.message, '服务出了一点问题，已记录，请重试');

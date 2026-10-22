@@ -10,22 +10,33 @@ function fakeClient() {
     ended: false,
     statusCode: 0,
     headers: null,
-    writeHead(code, headers) { c.statusCode = code; c.headers = headers; },
-    write(t) { c.chunks.push(String(t)); },
-    end() { c.ended = true; },
+    writeHead(code, headers) {
+      c.statusCode = code;
+      c.headers = headers;
+    },
+    write(t) {
+      c.chunks.push(String(t));
+    },
+    end() {
+      c.ended = true;
+    },
     on() {},
   };
   return c;
 }
 
 function framesOf(client) {
-  return client.chunks.join('').split('\n\n').filter((b) => b.includes('event: ')).map((block) => {
-    const lines = block.split('\n');
-    return {
-      event: (lines.find((l) => l.startsWith('event: ')) || '').slice(7),
-      data: (lines.find((l) => l.startsWith('data: ')) || '').slice(6),
-    };
-  });
+  return client.chunks
+    .join('')
+    .split('\n\n')
+    .filter((b) => b.includes('event: '))
+    .map((block) => {
+      const lines = block.split('\n');
+      return {
+        event: (lines.find((l) => l.startsWith('event: ')) || '').slice(7),
+        data: (lines.find((l) => l.startsWith('data: ')) || '').slice(6),
+      };
+    });
 }
 
 function mkHub(over = {}) {
@@ -49,7 +60,10 @@ test('客户端连上先收到 event-stream 头 + 一份状态和日志', async 
   assert.equal(c.statusCode, 200);
   assert.equal(c.headers['content-type'], 'text/event-stream');
   const f = framesOf(c);
-  assert.deepEqual(f.map((x) => x.event), ['state', 'logs']);
+  assert.deepEqual(
+    f.map((x) => x.event),
+    ['state', 'logs']
+  );
   assert.deepEqual(JSON.parse(f[0].data), { phase: 'IDLE', n: 0 });
   assert.equal(JSON.parse(f[1].data)[0].msg, '已启动');
   hub.stop();
@@ -117,7 +131,11 @@ test('客户端断开后自己摘掉，不再往里写', async () => {
   const { hub, s } = mkHub();
   const handlers = {};
   const res = fakeClient();
-  const req = { on(type, cb) { handlers[type] = cb; } };
+  const req = {
+    on(type, cb) {
+      handlers[type] = cb;
+    },
+  };
   hub.addClient(req, res);
   assert.equal(hub.clientCount, 1);
 

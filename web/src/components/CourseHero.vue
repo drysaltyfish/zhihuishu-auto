@@ -33,11 +33,14 @@ const headLabel = computed(() => {
 <template>
   <section class="card hero" :class="{ idle: !hasCourse }">
     <div class="hhead">
-      <div style="min-width:0">
-        <div class="ctitle">{{ headLabel }}<span class="cmeta" style="margin-left:8px">{{ S.course.platform }}</span></div>
+      <div style="min-width: 0">
+        <div class="ctitle">
+          {{ headLabel }}<span class="cmeta" style="margin-left: 8px">{{ S.course.platform }}</span>
+        </div>
         <h1 :title="S.course.name">{{ S.course.name }}</h1>
         <div class="hsub">
-          <span>{{ S.course.chapter }}</span><span class="sep">/</span><span>{{ S.course.taskPoint }}</span>
+          <span>{{ S.course.chapter }}</span
+          ><span class="sep">/</span><span>{{ S.course.taskPoint }}</span>
           <span v-if="hasCourse" class="badge">任务点 {{ S.course.index }}/{{ S.course.total }}</span>
         </div>
       </div>
@@ -45,11 +48,16 @@ const headLabel = computed(() => {
     </div>
 
     <div class="playrow">
-      <div class="clock">{{ fmtClock(S.video.ct) }}<em>/ {{ fmtClock(S.video.dur) }}</em></div>
+      <div class="clock">
+        {{ fmtClock(S.video.ct) }}<em>/ {{ fmtClock(S.video.dur) }}</em>
+      </div>
       <div class="hmeta">
         <span>倍速 {{ S.video.rate }}×</span>
         <span>已看 {{ fmtClock(S.progress.watchedSec) }}</span>
-        <span>任务点 {{ pctText(S.progress.taskPointPct) }}<template v-if="S.progress.taskPointPct !== null">%</template></span>
+        <span
+          >任务点 {{ pctText(S.progress.taskPointPct)
+          }}<template v-if="S.progress.taskPointPct !== null">%</template></span
+        >
       </div>
     </div>
     <div class="bar"><div class="fill" :style="{ width: pct.toFixed(2) + '%' }"></div></div>

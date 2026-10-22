@@ -20,6 +20,7 @@ export function computeNextQuestion(state) {
  */
 export function etaText(sec) {
   const v = Math.max(0, Math.round(sec));
-  const m = Math.floor(v / 60), s = v % 60;
+  const m = Math.floor(v / 60),
+    s = v % 60;
   return m > 0 ? m + ' 分 ' + s + ' 秒' : v + ' 秒';
 }

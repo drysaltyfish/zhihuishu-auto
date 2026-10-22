@@ -1,19 +1,37 @@
 {
   "name": "zhihuishu-auto",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "智慧树自动听课（本地桌面版）",
+  "author": "zhihuishu-auto",
+  "license": "UNLICENSED",
   "type": "module",
+  "main": "desktop/main.mjs",
   "scripts": {
     "web:build": "vite build --config web/vite.config.js",
     "test": "node --test",
-    "start": "node server/index.mjs"
+    "start": "node server/index.mjs",
+    "start:mock": "node server/index.mjs --mock",
+    "browsers:install": "node scripts/install-browsers.mjs",
+    "desktop:dev": "electron .",
+    "desktop:dir": "npm run web:build && electron-builder --dir",
+    "dist": "npm run web:build && electron-builder --win nsis",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
-    "playwright": "^1.64.1",
-    "vue": "^3.5.12"
+    "adm-zip": "^0.6.1",
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.9",
+    "playwright": "^1.64.1"
   },
   "devDependencies": {
+    "@vitejs/plugin-vue": "^5.1.4",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
+    "prettier": "^3.3.3",
     "vite": "^5.4.10",
-    "@vitejs/plugin-vue": "^5.1.4"
+    "vue": "^3.5.12",
+    "vue-router": "^4.6.4"
   }
 }

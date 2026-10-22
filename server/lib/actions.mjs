@@ -10,6 +10,10 @@ const CONTROL = {
   quit: { guard: 'running', patch: () => ({ paused: true, phase: 'STOPPED', video: { paused: true } }) },
   // 手动做某一章的平时测试（key 为空由 worker 自己挑；key='__retry' 清掉失败状态）
   quiz: { guard: 'running' },
+  // 登录二维码：刷新 / 把隐藏的浏览器窗口叫出来手动登录（账号、学号、QQ 等）
+  refreshQr: { guard: 'running' },
+  showBrowser: { guard: 'running' },
+  hideBrowser: { guard: 'running' },
   // 下面的动作界面上不出现：mock 自检和 debug 摸页面结构用
   verify: { guard: 'any', mockOnly: true },
   unverify: { guard: 'any', mockOnly: true },
@@ -17,7 +21,9 @@ const CONTROL = {
   verifyprobe: { guard: 'running', debugOnly: true },
 };
 
-export function isStoppedPhase(phase) { return phase === 'IDLE' || phase === 'STOPPED'; }
+export function isStoppedPhase(phase) {
+  return phase === 'IDLE' || phase === 'STOPPED';
+}
 
 /**
  * @returns {{ok:true, action:object} | {ok:false, status:number, message:string, hint?:string}}

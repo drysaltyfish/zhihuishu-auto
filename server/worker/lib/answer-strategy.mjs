@@ -35,7 +35,9 @@ export function judge(chosenLabel, answerText) {
 
 /** 题面摘要：「【单选题】xxx」→ 保留题型前缀，最长 60 字 */
 export function summaryOf(title) {
-  return String(title || '').replace(/^.*?【/, '【').slice(0, 60);
+  return String(title || '')
+    .replace(/^.*?【/, '【')
+    .slice(0, 60);
 }
 
 /** 展示用的选择文本：「B. 选项文字前 24 字」 */
@@ -54,7 +56,7 @@ export function historyEntry({ point, dialog, chosenIdx, how, right, answerText,
     by: how,
     right: right,
     correct: answerText || '',
-    result: right === null ? 'ok' : (right ? 'ok' : 'bad'),
+    result: right === null ? 'ok' : right ? 'ok' : 'bad',
     at,
   };
 }
