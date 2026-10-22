@@ -10,6 +10,8 @@ import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
 import { askLLM as askLLMShared } from '../llm.mjs';
+import { mergePoints, nearestPoint, markAnswered, nextQuestionOf, toStateList } from './lib/question-points.mjs';
+import { chooseFallback, judge, labelOf, historyEntry } from './lib/answer-strategy.mjs';
 
 const DATA = process.env.ZHS_DATA || path.join(process.cwd(), 'data');
 const PROFILE = path.join(DATA, 'profile');
@@ -220,30 +222,18 @@ function attachNetwork(target) {
         const pts = (j && j.data && j.data.questionPoint) || [];
         const vkey = lastVideoKey || '';
         const newVideo = !!vkey && !!questionPointsKey && vkey !== questionPointsKey;
-        if (newVideo) { questionPoints = []; questionPointsKey = ''; }
-        if (pts.length) {
-          // 平台可能只回"还没答的"点：按 questionIds 合并，已答过的保留（前端要能看见"已答"）
-          const prev = new Map(questionPoints.map((q) => [String(q.questionIds), q]));
-          const merged = pts.map((p) => {
-            const old = prev.get(String(p.questionIds));
-            return { timeSec: p.timeSec, questionIds: p.questionIds, answered: !!(old && old.answered) };
-          });
-          for (const old of questionPoints) {
-            if (old.answered && !merged.some((m) => String(m.questionIds) === String(old.questionIds))) merged.push({ ...old });
-          }
-          merged.sort((a, b) => a.timeSec - b.timeSec);
-          const changed = merged.length !== questionPoints.length || merged.some((m, i) => m.timeSec !== (questionPoints[i] || {}).timeSec || m.answered !== (questionPoints[i] || {}).answered);
-          questionPoints = merged;
+        const merged = mergePoints(questionPoints, pts, { newVideo });
+        questionPoints = merged.points;
+        if (merged.mode === 'merged') {
           questionPointsKey = vkey;
-          patch({ questionPoints: questionPoints.map((q) => ({ ...q, state: q.answered ? 'done' : 'next' })), pointsLoaded: true });
-          if (changed) log('ok', '本节弹题点：' + questionPoints.map((q) => q.timeSec + 's' + (q.answered ? '(已答)' : '')).join('、'));
+          patch({ questionPoints: toStateList(questionPoints), pointsLoaded: true });
+          if (merged.changed) log('ok', '本节弹题点：' + questionPoints.map((q) => q.timeSec + 's' + (q.answered ? '(已答)' : '')).join('、'));
           await applyPlaying();
-        } else if (questionPoints.length && !newVideo) {
+        } else if (merged.mode === 'kept') {
           // 答完题后平台会再拉一次，可能回空列表：不能因此把前端的弹题点清空
           log('info', '平台这次没回弹题点（多半是已经答过），保留已读到的列表');
           patch({ pointsLoaded: true });
         } else {
-          questionPoints = [];
           questionPointsKey = vkey;
           log('info', '本节没有弹题点');
           patch({ questionPoints: [], pointsLoaded: true });
@@ -802,7 +792,7 @@ async function handleDialog(st) {
       d = (await findDialog()) ? (await findDialog()).d : null;
       if (!d) { log('ok', '弹窗已关闭'); break; }
       fd = await findDialog();
-      const pt = pickPoint();
+      const pt = nearestPoint(questionPoints, lastCt);
       if (d.answered) {
         log('info', '这题已提交（' + (d.feedback || '已答') + '，' + (d.answerText || '') + '），直接关闭');
       } else {
@@ -811,9 +801,7 @@ async function handleDialog(st) {
         const res = await askLLM(d);
         if (res.ok) { chosenIdx = res.idx; how = 'LLM'; log('ok', 'LLM 选择 ' + (d.options[chosenIdx].label || chosenIdx) + '（模型回：' + res.raw + '）'); }
         else {
-          const pool = d.options.map((o, i) => ({ o, i })).filter((x) => !/以上都|都不对|全部|无法确定|none of the above|all of the above/i.test(x.o.text));
-          const use = pool.length ? pool : d.options.map((o, i) => ({ o, i }));
-          chosenIdx = use[Math.floor(Math.random() * use.length)].i;
+          chosenIdx = chooseFallback(d.options).idx;
           log('info', '随机选择（' + res.why + '）：' + (d.options[chosenIdx].label || chosenIdx + 1));
         }
         const click = await clickOption(fd, chosenIdx);
@@ -828,9 +816,9 @@ async function handleDialog(st) {
           if (now.d.answered) { after = now.d; break; }
         }
         if (after) {
-          const chosenLabel = (d.options[chosenIdx] && d.options[chosenIdx].label || '').replace(/[^A-H]/g, '');
-          const correctLabel = (after.answerText || '').replace(/[^A-H]/g, '');
-          const right = !!(chosenLabel && correctLabel && chosenLabel === correctLabel);
+          const chosenLabel = labelOf(d.options[chosenIdx]);
+          const correctLabel = labelOf({ label: after.answerText });
+          const right = judge(chosenLabel, correctLabel);
           log(right ? 'ok' : 'warn', (right ? '答对了' : '答错了') + '（我选 ' + (chosenLabel || '?') + '，正确答案 ' + (correctLabel || '?') + '），开始关闭弹窗');
           await dumpDialogDetail(fd, 'answered');
           recordAnswer(pt, d, chosenIdx, how, right, after.answerText);
@@ -869,34 +857,14 @@ async function handleDialog(st) {
   }
 }
 
-/** 用当前进度找对应的弹题点（题目由平台下发，时间点来自接口） */
-function pickPoint() {
-  if (!questionPoints.length) return null;
-  const cand = questionPoints.filter((q) => !q.answered)
-    .sort((a, b) => Math.abs(a.timeSec - lastCt) - Math.abs(b.timeSec - lastCt))[0];
-  if (!cand) return questionPoints.slice().sort((a, b) => Math.abs(a.timeSec - lastCt) - Math.abs(b.timeSec - lastCt))[0];
-  return cand;
-}
-
 const history = [];
 function recordAnswer(pt, d, chosenIdx, how, right, answerText) {
-  if (pt) pt.answered = true;
-  const chosen = (d.options[chosenIdx] && d.options[chosenIdx].label || '') + ' ' + String(d.options[chosenIdx] && d.options[chosenIdx].text || '').slice(0, 24);
-  history.unshift({
-    qid: pt ? pt.questionIds : '?',
-    summary: String(d.title || '').replace(/^.*?【/, '【').slice(0, 60),
-    chosen: chosen.trim(),
-    by: how,
-    right: right,
-    correct: answerText || '',
-    result: right === null ? 'ok' : (right ? 'ok' : 'bad'),
-    at: stamp(),
-  });
+  questionPoints = markAnswered(questionPoints, pt);
+  history.unshift(historyEntry({ point: pt, dialog: d, chosenIdx, how, right, answerText, at: stamp() }));
   if (history.length > 20) history.length = 20;
-  const qd = questionPoints.find((x) => !x.answered) || null;
   patch({
-    questionPoints: questionPoints.map((x) => ({ ...x, state: x.answered ? 'done' : 'next' })),
-    nextQuestion: qd ? { atSec: qd.timeSec, etaSec: Math.max(0, qd.timeSec - lastCt), questionId: qd.questionIds } : null,
+    questionPoints: toStateList(questionPoints),
+    nextQuestion: nextQuestionOf(questionPoints, lastCt),
     answers: { auto: autoAnswer, advance: autoAdvance, count: history.length, strategy: CONFIG.llm && CONFIG.llm.apiKey ? 'llm' : 'random', right: history.filter((h) => h.right).length },
     history: history.slice(),
   });
