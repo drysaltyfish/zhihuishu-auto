@@ -18,16 +18,27 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
   let expectExit = false;
   let wantRunning = false;
   let quitting = false;
-  let pending = null;           // 等 worker ready 后补发的指令
+  let queue = [];               // 等 worker ready 后按顺序补发（原来单槽会被后一条覆盖）
   let crashTimes = [];          // 用来限速自愈
   let reviveTimer = null;
+  let readyWait = null;         // start() 之后 index 用它等真正 ready 再推设置
+  let readyResolve = null;
+
+  /** worker 就绪信号：index 不再用 setTimeout 赌 1.5 秒 */
+  function armReadyWait() {
+    readyWait = new Promise((resolve) => { readyResolve = resolve; });
+  }
+
+  function settleReady() {
+    if (readyResolve) { const r = readyResolve; readyResolve = null; r(); }
+  }
 
   function send(cmd, data) {
     if (child && ready) {
       try { child.send({ type: 'cmd', cmd, data }); return true; } catch {}
     }
-    pending = { cmd, data };
-    return false;
+    if (queue.length < 50) queue.push({ cmd, data });
+    return true; // 已接收（先排队），不算失败
   }
 
   function onMessage(m) {
@@ -35,7 +46,9 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
       if (!m || typeof m !== 'object') return;
       if (m.type === 'ready') {
         ready = true;
-        if (pending) { const p = pending; pending = null; send(p.cmd, p.data); }
+        settleReady();
+        const q = queue; queue = [];
+        for (const it of q) send(it.cmd, it.data);
         return;
       }
       if (m.type === 'state' && m.patch) { applyPatch(state, m.patch); emit(); return; }
@@ -47,7 +60,8 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
 
   function onExit(code) {
     const wasReady = ready;
-    child = null; ready = false; pending = null;
+    child = null; ready = false; queue = [];
+    settleReady(); // 别让正在等 ready 的调用方永远挂着
     if (expectExit) return; // 上一次 quit 的收尾退出，正在等它让位（状态已清好）
     if (quitting) { pushLog('info', '后台已退出，断点已保存'); return; }
     if (!wantRunning) return;
@@ -78,6 +92,7 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
         stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       });
       ready = false;
+      armReadyWait();
       const me = ++childSeq;
       child.on('message', onMessage);
       child.on('exit', (code) => { if (me !== childSeq) return; onExit(code); });
@@ -143,11 +158,17 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
       if (action === 'course') return send('course', data);
       return false;
     },
+    /** index 在 start() 之后等它，再推开关；worker 一直没起来时最多等 60 秒 */
+    ready() {
+      if (ready) return Promise.resolve();
+      if (!readyWait) return Promise.resolve();
+      return Promise.race([readyWait, new Promise((r) => setTimeout(r, 60000))]);
+    },
     stop() {
       quitting = true; wantRunning = false;
       clearTimeout(reviveTimer);
       try { if (child) child.kill(); } catch {}
-      child = null; ready = false;
+      child = null; ready = false; queue = [];
     },
   };
 }

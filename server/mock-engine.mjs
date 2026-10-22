@@ -1,4 +1,4 @@
-/** mock 引擎：不碰智慧树，用于界面联调 */
+/** mock 引擎：不碰智慧树，用于界面联调与自检；契约与真实引擎一致（start/ready/control/stop） */
 import { applyPatch } from './state.mjs';
 
 const MOCK_LESSONS = [
@@ -16,15 +16,22 @@ const OPTIONS = [
   '心理健康与身体健康无关',
 ];
 
+const MOCK_COURSES = [
+  { i: 0, name: '大学生心理素质发展', teacher: '李旭珊', school: '北京理工大学', now: '2.1 自我意识的内涵', pct: 4.8, recruitId: '477311' },
+  { i: 1, name: '大学生心理健康教育', teacher: '张老师', school: '某某大学', now: '1.1 心理健康概述', pct: 34, recruitId: '' },
+  { i: 2, name: '中国近现代史纲要', teacher: '王老师', school: '某某大学', now: '3.2 辛亥革命', pct: 61, recruitId: '' },
+];
+
+const QP = [
+  { timeSec: 425, questionIds: '1097920778' },
+  { timeSec: 1259, questionIds: '1097920779' },
+];
+
 export function createMockEngine(state, emit, pushLog) {
   let timer = null;
   let answerAt = null;
   let mockCurrent = '1.1';
-
-  const QP = [
-    { timeSec: 425, questionIds: '1097920778' },
-    { timeSec: 1259, questionIds: '1097920779' },
-  ];
+  let mockCourse = MOCK_COURSES[0].name;
 
   function reset() {
     applyPatch(state, {
@@ -72,45 +79,52 @@ export function createMockEngine(state, emit, pushLog) {
     pushLog('ok', 'mock 引擎已启动（未连接智慧树）');
     for (const q of QP) pushLog('info', '弹题点：' + q.timeSec + 's · 题号 ' + q.questionIds);
     clearInterval(timer);
-    timer = setInterval(() => {
-      if (state.phase === 'STOPPED' || state.paused) return;
-      const due = state.questionPoints.find((x) => !x.answered && state.video.ct >= x.timeSec);
-      if (due && !answerAt) {
-        state.phase = 'ANSWERING';
-        state.currentQid = due.questionIds;
-        state.video.paused = true;
-        pushLog('warn', '弹题出现：视频已暂停，等待作答');
-        if (state.answers.auto) { answerAt = Date.now() + 2000 + Math.random() * 3000; pushLog('info', '自动答题已开启：2-5 秒后随机作答'); }
-        else pushLog('warn', '自动答题已关闭：请在网页中手动作答');
+    timer = setInterval(() => { tickOnce(); emit(); }, 500);
+    emit();
+  }
+
+  /** 一拍：推进视频 / 弹题 / 切节。改完状态由调用方统一广播。 */
+  function tickOnce() {
+    if (state.phase === 'STOPPED' || state.paused) return;
+
+    const due = state.questionPoints.find((x) => !x.answered && state.video.ct >= x.timeSec);
+    if (due && !answerAt) {
+      state.phase = 'ANSWERING';
+      state.currentQid = due.questionIds;
+      state.video.paused = true;
+      pushLog('warn', '弹题出现：视频已暂停，等待作答');
+      if (state.answers.auto) { answerAt = Date.now() + 2000 + Math.random() * 3000; pushLog('info', '自动答题已开启：2-5 秒后随机作答'); }
+      else pushLog('warn', '自动答题已关闭：请在网页中手动作答');
+      recompute();
+      return;
+    }
+
+    if (answerAt && Date.now() >= answerAt) {
+      const q = state.questionPoints.find((x) => x.questionIds === state.currentQid && !x.answered);
+      if (q) {
+        const chosen = OPTIONS[Math.floor(Math.random() * OPTIONS.length)];
+        q.answered = true; q.state = 'done'; state.currentQid = null;
+        state.answers.count++;
+        state.history.unshift({ qid: q.questionIds, summary: '心理健康的标准不包括？', chosen, result: Math.random() > 0.4 ? 'ok' : 'bad', at: new Date().toTimeString().slice(0, 8) });
+        state.history = state.history.slice(0, 20);
+        state.video.paused = false; state.phase = 'PLAYING';
         recompute();
-        return;
+        pushLog('ok', '已提交答案，视频继续播放：' + chosen);
       }
-      if (answerAt && Date.now() >= answerAt) {
-        const q = state.questionPoints.find((x) => x.questionIds === state.currentQid && !x.answered);
-        if (q) {
-          const chosen = OPTIONS[Math.floor(Math.random() * OPTIONS.length)];
-          q.answered = true; q.state = 'done'; state.currentQid = null;
-          state.answers.count++;
-          state.history.unshift({ qid: q.questionIds, summary: '心理健康的标准不包括？', chosen, result: Math.random() > 0.4 ? 'ok' : 'bad', at: new Date().toTimeString().slice(0, 8) });
-          state.history = state.history.slice(0, 20);
-          state.video.paused = false; state.phase = 'PLAYING';
-          recompute();
-          pushLog('ok', '已提交答案，视频继续播放：' + chosen);
-        }
-        answerAt = null;
-        return;
-      }
-      if (state.video.ct < state.video.dur) {
-        state.video.ct = Math.min(state.video.dur, state.video.ct + 0.5 * state.video.rate);
-        state.progress.watchedSec += 0.5;
-        state.progress.taskPointPct = Math.min(100, Math.round((state.video.ct / state.video.dur) * 100));
-        recompute();
-      } else if (state.phase !== 'STOPPED') {
-        const nx = state.answers.advance ? nextLesson() : null;
-        if (nx) switchLesson(nx);
-        else { state.phase = 'STOPPED'; pushLog('info', '本段视频已播完（mock）'); }
-      }
-    }, 500);
+      answerAt = null;
+      return;
+    }
+
+    if (state.video.ct < state.video.dur) {
+      state.video.ct = Math.min(state.video.dur, state.video.ct + 0.5 * state.video.rate);
+      state.progress.watchedSec += 0.5;
+      state.progress.taskPointPct = Math.min(100, Math.round((state.video.ct / state.video.dur) * 100));
+      recompute();
+    } else if (state.phase !== 'STOPPED') {
+      const nx = state.answers.advance ? nextLesson() : null;
+      if (nx) switchLesson(nx);
+      else { state.phase = 'STOPPED'; pushLog('info', '本段视频已播完（mock）'); }
+    }
   }
 
   function switchLesson(code) {
@@ -136,51 +150,49 @@ export function createMockEngine(state, emit, pushLog) {
     return null;
   }
 
-  const MOCK_COURSES = [
-    { i: 0, name: '大学生心理素质发展', teacher: '李旭珊', school: '北京理工大学', now: '2.1 自我意识的内涵', pct: 4.8, recruitId: '477311' },
-    { i: 1, name: '大学生心理健康教育', teacher: '张老师', school: '某某大学', now: '1.1 心理健康概述', pct: 34, recruitId: '' },
-    { i: 2, name: '中国近现代史纲要', teacher: '王老师', school: '某某大学', now: '3.2 辛亥革命', pct: 61, recruitId: '' },
-  ];
-  let mockCourse = MOCK_COURSES[0].name;
-
   function control(action, data) {
-    if (action === 'settings') {
-      if (data && typeof data.autoAnswer === 'boolean') state.answers.auto = data.autoAnswer;
-      if (data && typeof data.autoAdvance === 'boolean') state.answers.advance = data.autoAdvance;
-      return true;
+    try {
+      if (action === 'settings') {
+        if (data && typeof data.autoAnswer === 'boolean') state.answers.auto = data.autoAnswer;
+        if (data && typeof data.autoAdvance === 'boolean') state.answers.advance = data.autoAdvance;
+        return true;
+      }
+      if (action === 'lesson') { switchLesson((data && data.code) || ''); return true; }
+      if (action === 'courses') {
+        applyPatch(state, { courses: MOCK_COURSES, coursesAt: Date.now() });
+        pushLog('ok', 'mock：读到 ' + MOCK_COURSES.length + ' 门课');
+        return true;
+      }
+      if (action === 'course') {
+        const idx = Number(data && data.index);
+        const c = MOCK_COURSES[idx];
+        if (!c) { pushLog('warn', 'mock：没有第 ' + (idx + 1) + ' 门课'); return true; }
+        mockCourse = c.name;
+        applyPatch(state, { course: { name: c.name, platform: '智慧树 · 学分课' }, notice: '已切到「' + c.name + '」（mock）' });
+        pushLog('ok', 'mock：已切到课程「' + c.name + '」');
+        return true;
+      }
+      if (action === 'verify') {
+        applyPatch(state, { phase: 'WAIT_VERIFY', verifyHint: '请完成安全验证', video: { paused: true }, notice: '智慧树要求人机验证：请在浏览器窗口点掉「请完成安全验证」，点完自动继续' });
+        pushLog('warn', 'mock：模拟人机验证（selftest 用）');
+        return true;
+      }
+      if (action === 'unverify') {
+        applyPatch(state, { phase: 'PLAYING', verifyHint: '', video: { paused: false }, notice: '人机验证已通过，继续听课' });
+        pushLog('ok', 'mock：模拟验证通过');
+        return true;
+      }
+      if (action === 'pause') { state.paused = true; state.phase = 'PAUSED'; state.video.paused = true; pushLog('info', '已暂停'); return true; }
+      if (action === 'resume') { state.paused = false; state.phase = 'PLAYING'; state.video.paused = false; pushLog('info', '已继续'); return true; }
+      if (action === 'restart') { state.video.ct = 396.4; reset(); pushLog('ok', '任务已重启'); return true; }
+      if (action === 'quit') { state.phase = 'STOPPED'; state.paused = true; state.video.paused = true; pushLog('info', '已退出：断点已保存'); return true; }
+      return false;
+    } finally {
+      emit();
     }
-    if (action === 'lesson') { switchLesson((data && data.code) || ''); return true; }
-    if (action === 'courses') {
-      applyPatch(state, { courses: MOCK_COURSES, coursesAt: Date.now() });
-      pushLog('ok', 'mock：读到 ' + MOCK_COURSES.length + ' 门课');
-      return true;
-    }
-    if (action === 'course') {
-      const idx = Number(data && data.index);
-      const c = MOCK_COURSES[idx];
-      if (!c) { pushLog('warn', 'mock：没有第 ' + (idx + 1) + ' 门课'); return true; }
-      mockCourse = c.name;
-      applyPatch(state, { course: { name: c.name, platform: '智慧树 · 学分课' }, notice: '已切到「' + c.name + '」（mock）' });
-      pushLog('ok', 'mock：已切到课程「' + c.name + '」');
-      return true;
-    }
-    if (action === 'verify') {
-      applyPatch(state, { phase: 'WAIT_VERIFY', verifyHint: '请完成安全验证', video: { paused: true }, notice: '智慧树要求人机验证：请在浏览器窗口点掉「请完成安全验证」，点完自动继续' });
-      pushLog('warn', 'mock：模拟人机验证（selftest 用）');
-      return true;
-    }
-    if (action === 'unverify') {
-      applyPatch(state, { phase: 'PLAYING', verifyHint: '', video: { paused: false }, notice: '人机验证已通过，继续听课' });
-      pushLog('ok', 'mock：模拟验证通过');
-      return true;
-    }
-        if (action === 'pause') { state.paused = true; state.phase = 'PAUSED'; state.video.paused = true; pushLog('info', '已暂停'); }
-    else if (action === 'resume') { state.paused = false; state.phase = 'PLAYING'; state.video.paused = false; pushLog('info', '已继续'); }
-    else if (action === 'restart') { state.video.ct = 396.4; reset(); pushLog('ok', '任务已重启'); }
-    else if (action === 'quit') { state.phase = 'STOPPED'; state.paused = true; state.video.paused = true; pushLog('info', '已退出：断点已保存'); }
   }
 
   function stop() { clearInterval(timer); }
 
-  return { start, control, stop, demo: true };
+  return { start, control, stop, ready: () => Promise.resolve() };
 }
