@@ -14,6 +14,7 @@ import { mergePoints, nearestPoint, markAnswered, nextQuestionOf, toStateList } 
 import { chooseFallback, judge, labelOf, historyEntry } from './lib/answer-strategy.mjs';
 import { DIALOG_BOX_CSS, PLAY_BUTTON_CSS } from './lib/page-scripts.mjs';
 import { createProbe } from './lib/probe.mjs';
+import { decide } from './lib/tick.mjs';
 
 const DATA = process.env.ZHS_DATA || path.join(process.cwd(), 'data');
 const PROFILE = path.join(DATA, 'profile');
@@ -47,6 +48,7 @@ let lastUrl = '';
 let endedLogged = false;
 let pageInfoDumped = false;
 let lastVideoSwitchAt = 0;
+let lastPhase = 'PLAYING'; // 上一次推给前端的 phase（避免每秒重复发同一条）
 
 /* ---------------- 配置（LLM 用） ---------------- */
 const DEFAULT_CONFIG = {
@@ -659,6 +661,21 @@ function recordAnswer(pt, d, chosenIdx, how, right, answerText) {
   });
 }
 
+/* 决策里说的「动作」在这里变成真正的 I/O（决策本身在 lib/tick.mjs，纯函数） */
+async function runEffect(e, st) {
+  try {
+    if (e.type === 'resetPoints') { questionPoints = []; questionPointsKey = ''; patch({ pointsLoaded: false }); return; }
+    if (e.type === 'readCourseInfo') { await readCourseInfo(); return; }
+    if (e.type === 'shot') { await shot(e.name); return; }
+    if (e.type === 'ensurePlaying') { await ensurePlaying(); return; }
+    if (e.type === 'advance') { const ok = await maybeAdvanceLesson(!!e.force); if (!ok && e.onFalse) patch(e.onFalse); return; }
+    if (e.type === 'recoverPage') { await recoverPage(); return; }
+    if (e.type === 'handleDialog') { await handleDialog(st); return; }
+  } catch (err) {
+    log('warn', '动作执行失败（已忽略）：' + e.type + ' ' + String(err && err.message || err).slice(0, 120));
+  }
+}
+
 /* ================= 主循环 ================= */
 async function loop() {
   if (stopped) return;
@@ -698,82 +715,21 @@ async function loop() {
     }
 
     const st = await pageState();
-    if (st.video) {
-      noVideoTicks = 0;
-      const v = st.video;
-      // 有的播放器播完不会把 ended 置 true，只是暂停在 100%（实测 2.5 卡在这里），按「到结尾」处理
-      const atEnd = v.dur > 0 && v.ct >= v.dur - 1.5;
-      const key = v.src + '|' + Math.round(v.dur);
-      if (lastVideoKey && key !== lastVideoKey) {
-        lastVideoSwitchAt = Date.now();
-        log('info', '视频已切换（平台自动跳下一节或换了课）：新时长 ' + Math.round(v.dur) + 's');
-        endedLogged = false;
-        questionPoints = [];
-        questionPointsKey = '';
-        patch({ pointsLoaded: false });
-        lastCt = v.ct;
-        await readCourseInfo();
-      }
-      lastVideoKey = key;
-      if (v.ct + 3 < lastCt) log('info', '视频进度回退：' + lastCt + 's → ' + v.ct + 's');
-      lastCt = v.ct;
-      patch({
-        video: { ct: v.ct, dur: v.dur, rate: v.rate, paused: v.paused || !!st.dialog.visible },
-        progress: { watchedSec: Math.round(v.ct), taskPointPct: v.dur ? Math.min(100, Math.round((v.ct / v.dur) * 100)) : null },
-        summary: { section: { pct: v.dur ? Math.min(100, Math.round((v.ct / v.dur) * 100)) : null, watched: Math.round(v.ct), total: Math.round(v.dur) } },
-      });
-      if (!pageInfoDumped) { pageInfoDumped = true; await readCourseInfo(); }
-
-      if (v.ended || atEnd) {
-        if (!endedLogged) {
-          endedLogged = true;
-          log('warn', (v.ended ? '本节视频播完了' : '视频停在结尾（已到 100% 但没触发 ended）') + '，看看有没有下一节可切');
-          await shot('ended-' + Date.now() + '.png');
-          let advanced = false;
-          if (!userPaused) advanced = await maybeAdvanceLesson(true);
-          if (!advanced) {
-            patch({ phase: 'ENDED', notice: autoAdvance ? '本节已播完，没找到能自动切过去的下一节' : '本节播完了；自动跳节是关的，请在课程目录里选下一节' });
-          }
-        }
-      } else if (userPaused) {
-        stallTicks = 0;
-      } else if (v.paused && !st.dialog.visible) {
-        stallTicks++;
-        if (stallTicks >= 3) { await ensurePlaying(); stallTicks = 0; }
-        // 兜底：暂停且进度长期不动，别无声僵死（每秒一条会刷屏，所以每 60 秒才喊一次）
-        frozenTicks = Math.abs(v.ct - frozenCt) < 0.5 ? frozenTicks + 1 : 0;
-        frozenCt = v.ct;
-        if (frozenTicks > 0 && frozenTicks % 60 === 0) {
-          log('warn', '视频暂停且进度不动（' + Math.round(v.ct) + 's / ' + Math.round(v.dur) + 's），再试着播一次');
-          patch({ notice: '视频停住了（进度不动），正在尝试恢复；若一直不动，点一下浏览器里的播放键' });
-          await ensurePlaying();
-        }
-        if (frozenTicks > 300) { patch({ phase: 'PAUSED', notice: '视频像是卡住了：请在浏览器窗口里点一下播放键，或点「重启」' }); frozenTicks = 0; }
-      } else {
-        stallTicks = 0;
-        frozenTicks = 0;
-        frozenCt = -1;
-        if (st.phase !== 'PLAYING') patch({ phase: 'PLAYING' });
-        if (!userPaused && !st.dialog.visible) await maybeAdvanceLesson(false);
-      }
-    } else if (!endedLogged) {
-      if (noVideoTicks === 0) log('info', '没找到视频，开始尝试恢复页面…');
-      noVideoTicks++;
-      if (noVideoTicks === 3) log('warn', '页面里找不到视频了（可能跳到了课程目录页）');
-      if (noVideoTicks === 6) patch({ phase: 'COURSE_PICK', pickHint: '找不到视频，请点进要听的那一节' });
-      if (noVideoTicks % 12 === 0) await recoverPage();
-    }
-
-    if (st.dialog.visible && !userPaused) {
-      if (autoAnswer) { dialogNotified = false; await handleDialog(st); }
-      else if (!dialogNotified) {
-        dialogNotified = true;
-        log('warn', '弹题出现，但自动答题是关的 —— 请在浏览器窗口里手动答');
-        patch({ phase: 'PAUSED', video: { paused: true }, notice: '弹题等你手动作答（自动答题已关闭）' });
-      }
-    } else if (!st.dialog.visible) {
-      dialogNotified = false;
-    }
+    const plan = decide(
+      { video: st.video, dialog: st.dialog },
+      {
+        lastVideoKey, lastCt, endedLogged, stallTicks, frozenCt, frozenTicks,
+        dialogNotified, pageInfoDumped, noVideoTicks, lastVideoSwitchAt, lastPhase,
+      },
+      { userPaused, autoAnswer, autoAdvance },
+    );
+    ({
+      lastVideoKey, lastCt, endedLogged, stallTicks, frozenCt, frozenTicks,
+      dialogNotified, pageInfoDumped, noVideoTicks, lastVideoSwitchAt, lastPhase,
+    } = plan.mem);
+    for (const p of plan.patches) patch(p);
+    for (const l of plan.logs) log(l.kind, l.msg);
+    for (const e of plan.effects) await runEffect(e, st);
   } catch (e) {
     log('err', '主循环异常（已忽略）：' + String(e && e.message || e).slice(0, 200));
   }
