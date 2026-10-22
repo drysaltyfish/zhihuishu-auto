@@ -337,3 +337,41 @@ const nextQ = computed(() => {
 - `npm test`：纯函数、无浏览器、无端口、毫秒级，改完代码就应跑；
 - `node scripts/selftest.mjs`：41 项端到端（真实引擎空闲页 + mock 全流程 + 人机验证提示 + 提示条/下一题回归），要 Chrome、要 `ZHS_DATA=data/selftest-xxx`（10.6），慢，发版前跑。
 - selftest 会留下 `data/selftest-*`，`data/` 已在 `.gitignore` 里。
+
+### 10.12 服务端入口拆分：路由表与 lib 模块（2026-10-22）
+
+**背景**：`server/index.mjs` 267 行里塞了三件事——组合根（装配日志/状态/引擎/SSE）、HTTP 适配（json/静态文件/读 body）、业务规则（哪些动作允许、什么相位能点、失败怎么包装）。130 行 `if (url.pathname === …)` 链里，相位守卫写了 4 次、失败包装写了 4 次、`readJson` 写了 4 次；`/api/llmcheck` 在 handler 里同步 `fs.readFileSync` 配置并硬编码样题。更麻烦的是**引擎缝隙里的三个哑弹**：
+
+1. `/api/control` 回执是 `{ ok: !!okc || true }` —— 恒为 true，引擎拒绝对前端永远不可见；
+2. 起点要等 worker ready，靠 `setTimeout(…, 1500)` 赌，赌输了开关就丢；而 `real-engine` 的补发槽 **只有一个**，start 后连推两条设置会互相覆盖；
+3. SSE 其实是 2Hz 全量快照轮询（`setInterval 500ms` + `if (dirty || MOCK)`），且帧格式在三处各拼一遍。
+
+**改法（新目录 `server/lib/`，入口只剩装配 + 每接口几行）**：
+
+| 模块 | 职责 | 关键接口 |
+|---|---|---|
+| `lib/http.mjs` | JSON 响应、带用户提示的错误、读请求体、静态文件 | `httpError(status,message,hint)`（`expose=true`）、`json/fail/readJson/serveStatic` |
+| `lib/router.mjs` | 找路由 → 校验令牌 → 校验方法 → 读 body → 调 handler → 统一包装错误 | `createRouter({routes,token,log,context})` |
+| `lib/actions.mjs` | 动作表：允许清单 + 相位守卫 + 成功后的乐观补丁 | `resolveControl(name,{phase,mock,debug})`、`actionPatch(name)`、`requireRunning(state,hint)` |
+| `lib/sse.mjs` | 只有状态/日志真的变了才推；帧格式只拼一次 | `createHub({getState,getLogs})` → `addClient/stateChanged/logsChanged` |
+| `lib/logs.mjs` | 日志环（最近 300 条）+ 落 `data/runtime.log`（超 2MB 清空） | `createLogRing({dataDir,onChange})` |
+| `lib/config.mjs` | 按 mtime+size 缓存 `data/config.json`，首启写模板但绝不覆盖 | `createConfigStore({dataDir,log})` → `llm()/ensureTemplate()` |
+| `lib/llm-check.mjs` | 「测试模型」的样题与判定 | `runLlmCheck(llm,{ask})` |
+
+**三个哑弹的修法**：
+- `/api/control`：`engine.control` 不抛就回 `{ok:true}`，抛了由 router 包装成 `{code,message,hint}`——不再有恒真回执；
+- 起点：引擎契约补 `ready()`。`startTask()` 里 `engine.ready().then(() => engine.control('settings', {autoAnswer, autoAdvance}))`；`real-engine` 把单槽 `pending` 换成 `queue`（上限 50，ready 后按序 flush，崩溃退出时清空并 settle，避免调用方永远挂着）；
+- SSE：`createHub` 用「状态 JSON 串 + 日志 length/末条签名」去重，首帧只写给新连接，不再广播重复帧。
+
+**顺手修掉的**：
+- `/api/llmcheck` 不再在请求里同步读文件，配置走 `config.llm()`，样题搬进 `lib/llm-check.mjs`；
+- `server/state.mjs` 里 `verifyHint`/`courses` 的缩进错位（两个字段视觉上掉出了对象，只是恰好仍合法）；
+- `mock-engine.mjs` 重写为同一契约（`start/ready/control/stop`，去掉只有 index 认识的 `demo`），`tickOnce()` 抽出、`control` 用 try/finally 保证每次都广播；`start()` 结尾补一次 `emit()`（旧版靠 2Hz 轮询兜住，改成变化推送后必须自己广播）。
+
+**新增单测（`npm test` 里 5 个文件）**：`actions`（9 项：未知动作/相位守卫/乐观补丁/透出错误）、`router`（10 项：404/403/405/坏 JSON/500 不泄内部信息/expose 透出）、`logs`（7 项：截断/上限/落盘/不可写不炸）、`sse-hub`（8 项：首帧/去重/多客户端/断开摘除/序列化失败不崩）、`llm-check`（6 项）。全部用 stub req/res，不占端口、不启浏览器。
+
+**验证（2026-10-22）**
+- `npm test` → **92/92 pass**（含此前 53 项）；
+- `node scripts/selftest.mjs` → **41/41 PASS**（真实引擎空闲页 + mock 全流程 + 提示条/下一题回归，说明拆分没有改变对外行为）；
+- `node scripts/boottest.mjs` → PASS（真实 worker 拉起 Chrome → WAIT_LOGIN → 退出 STOPPED，验证 `ready()` 与队列没把启动卡住）；
+- mock 手动烟测：`/api/state` 正常、重复 start 回 409「任务已经在运行了」、未配 key 的 `/api/llmcheck` 回 `{ok:false, why:'未配置 API Key'}`、未知动作回 400「不支持的操作」、SSE 2 秒内收到 7 个事件、静态页 200。

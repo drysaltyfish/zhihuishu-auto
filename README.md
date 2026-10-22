@@ -127,16 +127,28 @@
     start.bat                 一键启动（GBK 编码，双击即可）
     打开界面.bat              界面网页被关了，双击这个重新打开（GBK 编码）
     server/
-      index.mjs               本地 HTTP 服务（127.0.0.1:8731，带随机 token；ZHS_DATA 可指定数据目录）
+      index.mjs               组合根：装配日志/状态/引擎/SSE/路由（127.0.0.1:8731，带随机 token）
+      lib/http.mjs            JSON 响应、友好错误、请求体解析、静态文件
+      lib/router.mjs          路由表 + 令牌校验 + 错误统一包装（一个 /api 请求只有这一条路）
+      lib/actions.mjs         动作表：允许清单、相位守卫、乐观补丁（原来散在三处）
+      lib/sse.mjs             状态/日志变化才推的 SSE 广播
+      lib/logs.mjs            运行日志环（界面 + data/runtime.log）
+      lib/config.mjs          data/config.json 读取与首启模板
+      lib/llm-check.mjs       「测试模型」用的一道样题
       state.mjs               共享状态结构 + 补丁合并
-      real-engine.mjs         真实引擎：fork worker、崩溃自愈、转指令
+      real-engine.mjs         真实引擎：fork worker、崩溃自愈、就绪队列、转指令
       llm.mjs                 答题模型调用（服务端自检与 worker 共用）
       worker/main.mjs         独占 Chrome 的 Playwright worker（登录/选节/播放/答题/自愈）
+      worker/lib/             worker 里抽出来的纯模块（页内脚本、帧适配、决策、答题策略…）
       mock-engine.mjs         假引擎（界面联调与自检用，完全不碰智慧树）
       public/                 Vue 构建产物
     web/
-      src/App.vue             仪表盘
+      src/App.vue             仪表盘外壳（SSE、动作编排、提示条）
+      src/components/         当前课程 / 下一题与答题 / 课程目录 / 日志 四块视图
+      src/domain/             下一题与格式化等纯函数
+      src/composables/        useAction（busy + 失败包装）
       src/api.js              fetch + SSE
+    test/                     纯函数单元测试（npm test，node:test）
     scripts/
       selftest.mjs            41 项自检（真实引擎空闲页 + mock 全流程 + 人机验证提示 + 提示条/下一题回归，不碰智慧树）
       boottest.mjs            真实 worker 拉起 Chrome 的启动验证（不登录、不进课程）
