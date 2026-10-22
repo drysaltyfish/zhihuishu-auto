@@ -15,6 +15,7 @@ import { chooseFallback, judge, labelOf, historyEntry } from './lib/answer-strat
 import { DIALOG_BOX_CSS, PLAY_BUTTON_CSS } from './lib/page-scripts.mjs';
 import { createProbe } from './lib/probe.mjs';
 import { decide } from './lib/tick.mjs';
+import { saveCookies, loadCookies } from './lib/session-store.mjs';
 
 const DATA = process.env.ZHS_DATA || path.join(process.cwd(), 'data');
 const PROFILE = path.join(DATA, 'profile');
@@ -49,6 +50,7 @@ let endedLogged = false;
 let pageInfoDumped = false;
 let lastVideoSwitchAt = 0;
 let lastPhase = 'PLAYING'; // 上一次推给前端的 phase（避免每秒重复发同一条）
+let lastCookieSaveAt = 0;  // 上次保存登录态的时间（Cookie 会滚动刷新，定期落盘）
 
 /* ---------------- 配置（LLM 用） ---------------- */
 const DEFAULT_CONFIG = {
@@ -198,6 +200,14 @@ async function launch() {
     ignoreDefaultArgs: ['--enable-automation', '--no-startup-window'],
   });
   attachNetwork(ctx);
+  // 智慧树的登录 Cookie 是会话 Cookie，Chrome 关掉就没了；启动时先把上次存的注入回去
+  const saved = loadCookies(DATA);
+  if (saved.length) {
+    try {
+      await ctx.addCookies(saved);
+      log('info', '已恢复上次的登录态（' + saved.length + ' 个 Cookie），不用重新扫码');
+    } catch (e) { log('warn', '恢复登录态失败：' + String((e && e.message) || e).slice(0, 120)); }
+  }
   setPage(ctx.pages()[0] || (await ctx.newPage()));
   ctx.on('page', (p) => {
     try {
@@ -205,6 +215,19 @@ async function launch() {
       if (!page || page.isClosed()) setPage(p);
     } catch {}
   });
+}
+
+/** 把当前登录 Cookie 落盘（登录成功 / 定期 / 退出时各存一次） */
+async function persistLogin(why) {
+  if (!ctx) return 0;
+  try {
+    const n = saveCookies(DATA, await ctx.cookies());
+    if (n) log('debug', '登录态已保存（' + n + ' 个 Cookie' + (why ? '，' + why : '') + '）');
+    return n;
+  } catch (e) {
+    log('warn', '保存登录态失败：' + String((e && e.message) || e).slice(0, 120));
+    return 0;
+  }
 }
 
 async function hasLoginCookie() {
@@ -219,14 +242,15 @@ async function ensureLogin() {
   if (!/zhihuishu/i.test(url)) {
     await page.goto('https://www.zhihuishu.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
   }
-  if (await hasLoginCookie()) { log('ok', '检测到已登录'); return true; }
+  if (await hasLoginCookie()) { log('ok', '检测到已登录'); await persistLogin('启动时'); return true; }
   patch({ phase: 'WAIT_LOGIN', loginNeeded: true, loginHint: '请在弹出的浏览器窗口里扫码登录智慧树（微信/QQ）' });
   log('warn', '等待扫码登录…');
   const deadline = Date.now() + 20 * 60 * 1000;
   while (Date.now() < deadline && !stopped) {
     if (await hasLoginCookie()) {
       patch({ phase: 'COURSE_PICK', loginNeeded: false, loginHint: '' });
-      log('ok', '登录成功');
+      log('ok', '登录成功，登录态已保存（下次不用再扫码）');
+      await persistLogin('扫码登录成功');
       await sleep(1500);
       return true;
     }
@@ -730,6 +754,7 @@ async function loop() {
     for (const p of plan.patches) patch(p);
     for (const l of plan.logs) log(l.kind, l.msg);
     for (const e of plan.effects) await runEffect(e, st);
+    if (Date.now() - lastCookieSaveAt > 180000) { lastCookieSaveAt = Date.now(); await persistLogin('定期'); }
   } catch (e) {
     log('err', '主循环异常（已忽略）：' + String(e && e.message || e).slice(0, 200));
   }
@@ -1042,6 +1067,7 @@ async function doStart() {
 
 async function doQuit() {
   stopped = true;
+  await persistLogin('退出前');
   try { if (ctx) await ctx.close(); } catch {}
   ctx = null; page = null; started = false;
   patch({ phase: 'STOPPED', video: { paused: true } });
