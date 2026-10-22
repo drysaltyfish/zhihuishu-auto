@@ -313,3 +313,27 @@ const nextQ = computed(() => {
 - 无头浏览器测 mock：提示条 `position:fixed`，出现前后 `.top/.grid/.card.course/.nextq` 坐标完全一致（只有日志卡因为新增一行日志变高 20px，属预期）；点 × 后提示条消失；切到 2.1 后「下一题」立即变成 `视频走到 03:43 · 题号 mock-2.1-0`（新视频的弹题点），不再停留在旧视频。
 - `node scripts/selftest.mjs` → **41/41 PASS**（新增：提示条浮空显示、提示条可手动关闭、提示条开关不引起重排、下一题面板不误报「本段末尾」）。
 - `打开界面.bat` 实测：服务在跑时打印带 token 地址并打开浏览器；服务没跑时给出中文提示。
+
+### 10.11 脚本瘦身与 npm test（2026-10-22）
+
+**背景**：`scripts/` 里长期堆着写一次就忘的调试脚本——30 个 `tmp-*.mjs`、3 个 `debug-advance*.mjs`，外加 `dbg.bat`、`dbg.bat.utf8`、`peek.mjs`、`quit.mjs`、`shot-live.mjs`。它们只在当时的某次排错里跑过，留着既不维护也容易误跑（其中几个会连真实服务、点真实课程树）。
+
+**删前核查**：全仓库 grep 这些文件名（README.md、docs/*.md、server/、web/、test/、package.json，两个 .bat 是 GBK，转 UTF-8 后再查）——零引用才删。结论：没有任何脚本/文档/bat 引用它们。
+
+**保留（7 个，长期有用）**：
+- `selftest.mjs` —— 41 项端到端自检，唯一的长期回归入口；
+- `boottest.mjs` —— 真实 worker 拉 Chrome 的启动验证（不登录、不进课程）；
+- `waitfor.mjs` / `watch.mjs` —— 联调时等 phase、盯 SSE 事件流；
+- `shot.mjs` —— 截仪表盘到 `docs/ui-preview*.png`（`shot-live.mjs` 的用途被它覆盖，删）；
+- `to-gbk.ps1` —— bat 的 GBK/CRLF 铁律工具（10.6）；
+- `run-bat.ps1` —— 脱离当前终端启动 start.bat，避免父窗口退出连坐。
+
+**npm test 接线**：`package.json` 加 `"test": "node --test"`。
+**坑**：必须裸 `node --test`，不能写成 `node --test test/`——Node 24 下带目录参数会报 `MODULE_NOT_FOUND`；裸跑时 Node 自己递归发现 `test/**/*.test.mjs`，也天然跳过 `node_modules`。
+
+**现状**：5 个测试文件 53 项全绿——`answer-strategy` 8 / `page-scripts` 9 / `question-points` 12 / `tick` 17 / `web-next-question` 7。前四个是候选 01/02 把 worker 主循环决策、页内提取脚本、答题策略、弹题点推理抽成纯函数后的回归；最后一个是候选 04 拆 `App.vue` 后 `nextQ` 算法的回归。
+
+**与 selftest 的分工**：
+- `npm test`：纯函数、无浏览器、无端口、毫秒级，改完代码就应跑；
+- `node scripts/selftest.mjs`：41 项端到端（真实引擎空闲页 + mock 全流程 + 人机验证提示 + 提示条/下一题回归），要 Chrome、要 `ZHS_DATA=data/selftest-xxx`（10.6），慢，发版前跑。
+- selftest 会留下 `data/selftest-*`，`data/` 已在 `.gitignore` 里。

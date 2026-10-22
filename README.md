@@ -139,16 +139,21 @@
       src/api.js              fetch + SSE
     scripts/
       selftest.mjs            41 项自检（真实引擎空闲页 + mock 全流程 + 人机验证提示 + 提示条/下一题回归，不碰智慧树）
-      boottest.mjs            真实 worker 拉起 Chrome 的启动验证
+      boottest.mjs            真实 worker 拉起 Chrome 的启动验证（不登录、不进课程）
+      waitfor.mjs             开发用：轮询 /api/state 等指定 phase（node scripts/waitfor.mjs ANSWERING,PAUSED 400）
+      watch.mjs               开发用：盯 SSE 事件流，把日志与状态变化写进 data/watch.log
+      shot.mjs                截仪表盘到 docs/ui-preview*.png（需服务已启动，docs/*.png 不入库）
       to-gbk.ps1              把 bat 转成 GBK/CRLF（改 bat 后必须转，否则 cmd 会乱码报错）
+      run-bat.ps1             脱离当前终端启动 start.bat（父窗口关掉不会连坐）
     docs/DESIGN.md            设计与铁律
 
 命令：
 
+    npm test                          # 跑 test/*.test.mjs 纯函数单元测试（node --test，不用启服务）
     npm run web:build                 # 只重建界面
     node server/index.mjs --mock     # 假引擎联调界面（安全）
     node server/index.mjs            # 真实引擎
-    node scripts/selftest.mjs        # 41 项自检
+    node scripts/selftest.mjs        # 41 项端到端自检（需要 Chrome，慢）
 
 ---
 

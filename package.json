@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "web:build": "vite build --config web/vite.config.js",
+    "test": "node --test",
     "start": "node server/index.mjs"
   },
   "dependencies": {
