@@ -136,7 +136,14 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   ok('运行页有课程目录', t1.includes('课程目录') && t1.includes('已完成'), '');
   ok('运行页有自动跳节开关', t1.includes('自动跳下一节'), '');
   ok('运行页有测试模型按钮', t1.includes('测试模型'), '');
-  ok('运行页有「我的课程」卡', t1.includes('我的课程') && t1.includes('刷新'), '');
+  // 我的课程入口在顶部课程胶囊里，点开是弹窗
+  await page.locator('.coursechip').click();
+  await sleep(450);
+  const pickerTxt = (await page.locator('.modal').innerText().catch(() => '')).replace(/\n/g, ' ');
+  ok('课程胶囊能打开「我的课程」弹窗', pickerTxt.includes('我的课程') && pickerTxt.includes('刷新'), pickerTxt.slice(0, 120));
+  await page.keyboard.press('Escape');
+  await sleep(350);
+  ok('弹窗可以关掉', (await page.locator('.modal').count()) === 0, '');
 
   // 章节测试卡片：列出每章、点「现在做」能跑起来并显示进度
   const quizCard = page.locator('.card').filter({ hasText: '自动做章节测试' }).first();
@@ -158,6 +165,20 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   } else {
     ok('点「现在做」后显示做题进度', false, '没有「现在做」按钮');
   }
+
+  // 一屏布局：整页不许滚动，课程目录不许横向溢出
+  const fit = await page.evaluate(() => {
+    const el = document.documentElement;
+    const lt = document.querySelector('.ltree');
+    return {
+      page: el.scrollHeight <= window.innerHeight + 1,
+      hOver: lt ? lt.scrollWidth <= lt.clientWidth + 1 : true,
+      rows: document.querySelectorAll('.lrow').length,
+    };
+  });
+  ok('仪表盘一屏放下（整页不滚动）', fit.page, '');
+  ok('课程目录没有横向溢出', fit.hOver, '');
+  ok('课程目录一屏显示完', fit.rows >= 5, '行数 ' + fit.rows);
 
   // 人机验证时界面要明确告诉用户「要在浏览器窗口点一下」
   await api(base, s.token, '/api/control', { action: 'verify' });

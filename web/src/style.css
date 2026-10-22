@@ -1,14 +1,39 @@
 :root{
-  --bg:#0b0f17; --panel:#121826; --panel2:#161e2e; --line:#1f2a3d;
-  --txt:#e6edf7; --dim:#8b9bb4; --dim2:#5b6b83;
-  --ok:#3ddc97; --warn:#ffb454; --bad:#ff6b6b; --acc:#4c8dff;
+  --bg:#080c15;
+  --panel:rgba(19,26,42,.82);
+  --panel2:rgba(26,35,55,.9);
+  --line:rgba(255,255,255,.075);
+  --line2:rgba(255,255,255,.13);
+  --txt:#e9eef8;
+  --dim:#93a1b8;
+  --dim2:#67748c;
+  --ok:#3ddc97;
+  --warn:#ffb454;
+  --bad:#ff6b81;
+  --acc:#5aa2ff;
+  --violet:#a78bfa;
+  --grad:linear-gradient(90deg,#5aa2ff,#3ddc97);
+  --shadow:0 10px 30px rgba(0,0,0,.3);
+  --r:13px;
 }
 *{box-sizing:border-box}
 html,body,#app{height:100%}
 body{
-  margin:0; background:radial-gradient(1200px 600px at 70% -10%,#16233a 0%,var(--bg) 55%);
-  color:var(--txt); font:14px/1.55 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  margin:0;
+  background:
+    radial-gradient(1100px 520px at 78% -12%, rgba(42,86,156,.30), transparent 62%),
+    radial-gradient(900px 520px at 6% 108%, rgba(24,92,72,.20), transparent 60%),
+    var(--bg);
+  color:var(--txt);
+  font:13px/1.5 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased;
+  overflow:hidden;
 }
-button{font:inherit;cursor:pointer;border:none;border-radius:8px;transition:.15s}
-button:disabled{opacity:.45;cursor:not-allowed}
+button{font:inherit;color:inherit;cursor:pointer;border:none;border-radius:9px;
+  transition:background .15s,border-color .15s,opacity .15s,filter .15s}
+button:disabled{opacity:.42;cursor:not-allowed}
+h1,h2,h3,p,ul{margin:0}
+ul{list-style:none;padding:0}
+::-webkit-scrollbar{width:7px;height:7px}
+::-webkit-scrollbar-thumb{background:#2a3852;border-radius:8px}
+::-webkit-scrollbar-track{background:transparent}

@@ -3,16 +3,20 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api, subscribe } from './api.js';
 import { phaseText as phaseLabelOf } from './domain/format.js';
 import { useAction } from './composables/useAction.js';
-import CoursePanel from './components/CoursePanel.vue';
-import QuizPanel from './components/QuizPanel.vue';
+import CourseHero from './components/CourseHero.vue';
+import LessonTree from './components/LessonTree.vue';
+import NextQuestion from './components/NextQuestion.vue';
+import AutoPanel from './components/AutoPanel.vue';
 import ChapterQuiz from './components/ChapterQuiz.vue';
-import LogPanel from './components/LogPanel.vue';
+import BottomDock from './components/BottomDock.vue';
+import CoursePicker from './components/CoursePicker.vue';
 import './app.css';
 
 const S = ref(null);
 const logs = ref([]);
 const connected = ref(false);
 const toast = ref(null);
+const pickerOpen = ref(false);
 let es = null;
 
 const phaseText = computed(() => phaseLabelOf(S.value));
@@ -29,6 +33,10 @@ const isPaused = computed(() => !!S.value && (S.value.phase === 'PAUSED' || S.va
 const isStopped = computed(() => !!S.value && S.value.phase === 'STOPPED');
 const isIdle = computed(() => !!S.value && S.value.phase === 'IDLE');
 const canStart = computed(() => !!S.value && (S.value.phase === 'IDLE' || S.value.phase === 'STOPPED'));
+const lessons = computed(() => (S.value && S.value.lessons) || []);
+const lessonsDone = computed(() => lessons.value.filter((l) => l.done).length);
+const courseTitle = computed(() => (S.value && S.value.course && S.value.course.name) || '未选择课程');
+
 const hint = computed(() => {
   if (!S.value) return null;
   const s = S.value;
@@ -69,7 +77,7 @@ async function ctl(name) {
 }
 
 const courses = computed(() => (S.value && S.value.courses) || []);
-// 读课程列表有自己的 busy（旧课程目录里「刷新」的禁用/文案只看它，不能被其它动作带禁）
+// 读课程列表有自己的 busy（不能被其它动作带禁）
 const courseAction = useAction(say);
 const coursesBusy = courseAction.busy;
 
@@ -80,9 +88,14 @@ async function loadCourses() {
   }, { guard: true, fail: '读课程列表没成功' });
 }
 
+function openPicker() {
+  pickerOpen.value = true;
+}
+
 async function pickCourse(i) {
   const c = courses.value[i];
   if (!c) return;
+  pickerOpen.value = false;
   await action.run('course', async () => {
     await api('/api/course', { index: i });
     say('正在切到《' + c.name + '》…');
@@ -111,18 +124,27 @@ onBeforeUnmount(() => { if (es) es.close(); });
 
 <template>
   <div class="wrap">
-    <header class="top">
+    <header class="hdr">
       <div class="brand">
         <div class="logo">智</div>
         <div>
-          <div class="t1">智慧树自动听课</div>
-          <div class="t2">
+          <div class="bname">智慧树自动听课</div>
+          <div class="bsub">
             <span class="dot" :class="connected ? 'on' : 'off'"></span>
             {{ connected ? '已连接本地服务' : '连接断开' }}
             <span class="sep">·</span>{{ phaseText }}
           </div>
         </div>
       </div>
+
+      <div class="hdr-mid">
+        <button class="coursechip" title="查看并切换我的课程" @click="openPicker">
+          <span class="cclabel">我的课程</span>
+          <span class="ccname">{{ courseTitle }}</span>
+          <span class="caret">▼</span>
+        </button>
+      </div>
+
       <div class="acts">
         <button v-if="canStart" class="btn primary" :disabled="!!busy || !S" @click="startTask">
           <span class="ic">▶</span> {{ isStopped ? '重新开始' : '开始听课' }}
@@ -140,6 +162,37 @@ onBeforeUnmount(() => { if (es) es.close(); });
       </div>
     </header>
 
+    <div v-if="!S" class="empty">正在读取状态…</div>
+
+    <main v-else class="grid">
+      <div class="col-main">
+        <CourseHero :state="S" :has-course="hasCourse" :is-idle="isIdle" />
+        <section class="card lessons">
+          <div class="chead">
+            <span class="ctitle">课程目录</span>
+            <span class="cmeta">{{ lessonsDone }}/{{ lessons.length }} 节已完成 · 点任意一节可切过去</span>
+          </div>
+          <LessonTree
+            :lessons="lessons" :busy="busy" :is-idle="isIdle" :is-stopped="isStopped"
+            @pick="pickLesson" />
+        </section>
+      </div>
+
+      <aside class="rail">
+        <NextQuestion :state="S" />
+        <AutoPanel :state="S" :is-stopped="isStopped" :say="say" />
+        <ChapterQuiz :state="S" :say="say" />
+      </aside>
+    </main>
+
+    <BottomDock :logs="logs" :history="(S && S.history) || []" />
+
+    <CoursePicker
+      v-if="pickerOpen"
+      :courses="courses" :current="courseTitle" :busy="!!coursesBusy"
+      :is-idle="isIdle" :is-stopped="isStopped"
+      @close="pickerOpen = false" @refresh="loadCourses" @pick="pickCourse" />
+
     <transition name="fade">
       <div v-if="hintShow" class="hintwrap">
         <div class="hintbar" :class="hintShow.kind">
@@ -148,25 +201,6 @@ onBeforeUnmount(() => { if (es) es.close(); });
         </div>
       </div>
     </transition>
-
-    <div v-if="!S" class="empty">正在读取状态…</div>
-
-    <main v-else class="grid">
-      <div class="left">
-        <CoursePanel
-          :state="S" :busy="busy" :is-idle="isIdle" :is-stopped="isStopped"
-          :has-course="hasCourse" @pick-lesson="pickLesson" />
-      </div>
-
-      <aside class="side">
-        <QuizPanel
-          :state="S" :courses-busy="!!coursesBusy" :is-idle="isIdle" :is-stopped="isStopped"
-          :say="say" @refresh-courses="loadCourses" @pick-course="pickCourse" />
-        <ChapterQuiz :state="S" :say="say" />
-      </aside>
-    </main>
-
-    <LogPanel :logs="logs" />
 
     <transition name="fade">
       <div v-if="toast" class="toast" :class="toast.kind">{{ toast.msg }}</div>

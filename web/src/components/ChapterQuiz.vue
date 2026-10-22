@@ -17,6 +17,7 @@ const quiz = computed(() => (S.value && S.value.quiz) || null);
 const running = computed(() => !!(quiz.value && quiz.value.running));
 const last = computed(() => (quiz.value && quiz.value.last) || null);
 const titleShow = computed(() => (quiz.value && quiz.value.title) || '平时测试');
+const doneCount = computed(() => list.value.filter((r) => (r.status || 'todo') === 'done').length);
 const stepText = computed(() => {
   const q = quiz.value;
   if (!q) return '';
@@ -103,12 +104,13 @@ function metaText(row) {
 </script>
 
 <template>
-  <section class="card">
-    <div class="cardhead">
-      <span class="tag">章节测试</span>
+  <section class="card quizcard">
+    <div class="chead">
+      <span class="ctitle">章节测试</span>
       <div class="qauto">
-        <span class="muted small">自动做章节测试</span>
-        <button class="switch" :class="{ on: auto }" :disabled="!S" :title="auto ? '关掉后不会自动做章节测试' : '打开后每章看完自动做平时测试'" @click="toggleAuto">
+        <span class="cmeta">自动做章节测试</span>
+        <button class="switch" :class="{ on: auto }" :disabled="!S"
+          :title="auto ? '关掉后不会自动做章节测试' : '打开后每章看完自动做平时测试'" @click="toggleAuto">
           <span class="knob"></span>
         </button>
       </div>
@@ -116,8 +118,8 @@ function metaText(row) {
 
     <template v-if="running">
       <div class="qprog">
-        <span class="k">正在做 {{ titleShow }}</span>
-        <span class="muted small">{{ stepText }}</span>
+        <span class="small" style="color:#d5dfee">正在做 {{ titleShow }}</span>
+        <span class="cmeta">{{ stepText }}</span>
       </div>
       <div class="qbar"><div class="qbarfill" :style="progressStyle"></div></div>
       <div v-if="last" class="qlast">
@@ -125,9 +127,10 @@ function metaText(row) {
       </div>
     </template>
 
-    <div v-if="!list.length" class="muted pad">进入课程后这里会列出每一章的平时测试</div>
+    <div v-if="!list.length" class="empty-line">进入课程后这里会列出每一章的平时测试</div>
     <ul v-else class="qlist">
-      <li v-for="(row, i) in list" :key="row.key || i" class="qrow">
+      <li v-for="(row, i) in list" :key="row.key || i" class="qrow" :class="row.status || 'todo'">
+        <span class="qdot"></span>
         <div class="qmain">
           <div class="qname" :title="row.title || row.chapter || row.key">{{ row.chapter || row.key }}</div>
           <div class="qmeta">{{ metaText(row) }}</div>
@@ -143,6 +146,6 @@ function metaText(row) {
       </li>
     </ul>
 
-    <div class="qfoot">每章视频全部看完后自动做该章「平时测试」，答完自动提交；只做平时测试，不碰期末。</div>
+    <div class="qfoot">已交 {{ doneCount }}/{{ list.length }} 章 · 每章视频全部看完后自动做该章平时测试，答完自动交卷；不碰期末。</div>
   </section>
 </template>

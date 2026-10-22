@@ -410,3 +410,47 @@ const nextQ = computed(() => {
 
 **新增单测**：`quiz-logic`（解析/分章/已交合并）、`quiz-scripts`（真实试卷夹具含 onChecked、查看页 review）、`quiz-store`、`page-scripts` 的 `tests[].done`；`npm test` **129/129 pass**，`node scripts/selftest.mjs` **46/46 PASS**（新增章节测试卡片/进度/交卷 5 项）。
 
+### 10.14 仪表盘改成一屏（2026-10-22）
+
+**背景**：用户反馈「前端好丑，需要翻页，有大量空行」。改造前实测（1440×900）整页高 1454px 需要滚动：当前课程卡 539px（4 格进度总览平铺，底部大片留白）、课程目录 380px（内部再滚一道）、右栏 4 张卡 144+167+272+116+414 高矮不齐、日志卡固定 180px 几乎全空。
+
+**布局架子（全局 CSS 换成 grid 三段）**
+```css
+.wrap{height:100vh;width:100%;max-width:1760px;margin:0 auto;display:grid;
+  grid-template-rows:auto minmax(0,1fr) auto;gap:12px;padding:14px 18px}
+.grid{grid-template-columns:minmax(0,1fr) 356px}   /* 主列 + 右栏 */
+.col-main{grid-template-rows:auto minmax(0,1fr)}   /* 课程大卡 + 课程目录 */
+.rail{grid-template-rows:auto auto minmax(0,1fr)}  /* 下一题 / 自动答题 / 章节测试 */
+body{overflow:hidden}
+```
+整页固定一屏，滚动只发生在卡片内部（目录、章节测试列表、底部日志）；`max-width:1760px` 让 1920 宽屏两侧留边、不把内容拉散；`@media (max-width:1080px)` 才退回单列 + 整页滚动。窄屏（1240px）右栏 330px。
+
+**新组件分工（原来 4 个卡片拆成 8 个，App.vue 只留编排）**
+
+| 组件 | 位置 | 职责 |
+|---|---|---|
+| `CourseHero.vue` | 左主列 | 课程名/学校/章节/任务点 + 状态徽章 + 时钟（27px）+ 进度条 + 弹题点 chips + 底部内嵌进度总览 |
+| `ProgressOverview.vue` | 大卡底部 | 改成一整条 `.ovstrip`（4 列小条），不再是独立卡片；`pct` 为 null 只显示「—」不显示「—%」 |
+| `LessonTree.vue` | 左主列 | 课程目录多列铺开（见下），当前节高亮并滚到可见 |
+| `NextQuestion.vue` | 右栏 | 「下一题」倒计时 / 作答中 / 读取中 / 本节没有更多题目 |
+| `AutoPanel.vue` | 右栏 | 两个开关 + 答题模型自检 + 策略/今日已答 chips |
+| `ChapterQuiz.vue` | 右栏 | 章节测试列表（模板重写，数据逻辑不动） |
+| `CoursePicker.vue` | 顶栏胶囊点开 | 「我的课程」弹窗：刷新、课程行、当前课标记、Esc/✕ 关闭 |
+| `BottomDock.vue` | 底部 | 常驻 104px 底栏，两个页签：运行日志 / 答题记录 |
+
+删掉 `CoursePanel.vue`、`QuizPanel.vue`、`LogPanel.vue`；「我的课程」从右栏卡片改成顶栏胶囊 + 弹窗（右栏 356px 里放不下课程列表，且切课是低频操作）。
+
+**课程目录多列：放弃 CSS multicol**
+先试 `column-width:232px`，结果 `.ltree` `scrollWidth 1258 > clientWidth 1004`——固定高度容器里 multicol 会把放不下的内容**挤到第 5 列横向溢出**，不产生纵向滚动（单独实验：60×20px 内容 / 高 200 → `sh=201, sw=881`），第十~十三章直接看不见。
+改成 **JS 分桶 + CSS grid 列**：`ResizeObserver` 量容器宽 `w` → `cols = clamp(1..6, floor((w+14)/244))`；分组按「每章课时数+1.2」加权后**顺序切成 N 段**（保持章节顺序、各列高度接近）；渲染 `.ltree{display:grid;grid-template-columns:repeat(cols,minmax(0,1fr));overflow-y:auto}` + 每列一个 `.lcol` flex 竖排。
+实测 1440×900 四列正好放下 13 章 49 节（`ltree sh=ch=370`，无滚动、无横向溢出）；1920 六列 → 五列、内容更矮；1280×800 三列且目录内部滚动（高度不够，属预期）。
+
+**卡片高度贴内容**
+`.lessons,.quizcard{align-self:start;max-height:100%;overflow:hidden}`：数据少（mock 只有 5 节 2 章测试）时卡片缩到内容高度，不在卡里留一大片空白；数据多时封顶为可用高度、列表内部滚动。章节测试卡片的类名是 `.quizcard`（不是 `.quiz`），第一次写错选择器导致 mock 下卡片仍被拉满。
+
+**底部日志**：`.dockbody` 顶部加 `mask-image` 渐隐，自动滚到底时半截的旧行不再显得脏；日志与答题记录共用底栏两个页签。
+
+**验证**
+- 三档分辨率（1440×900 / 1280×800 / 1920×1080）实测 `document.documentElement.scrollHeight === innerHeight`（整页不滚动），`.ltree scrollWidth <= clientWidth`（无横向溢出），1920 下 `.wrap` 宽 1724（`max-width` 生效）。
+- 截图：`docs/ui-running.png`、`docs/ui-idle.png`、`docs/ui-stopped.png`、`docs/ui-verify.png` 由 selftest 重新生成（`docs/*.png` 不入库）。
+- `node scripts/selftest.mjs` → **50/50 PASS**：新增「课程胶囊能打开我的课程弹窗」「弹窗可以关掉」「仪表盘一屏放下」「课程目录没有横向溢出」「课程目录一屏显示完」；原 46 项里「运行页有『我的课程』卡」改成点胶囊断言弹窗。
