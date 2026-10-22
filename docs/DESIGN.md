@@ -616,13 +616,35 @@ body{overflow:hidden}
 - **更新默认离线**：没配静态目录就永远不提示新版本；配了也要用户手动点「检查更新」。
 - **登录态在 `data/profile/`**：换机器或删掉 `data/` 需要重新扫码登录。
 
-### 11.11 构建产物现状（0.1.0）
+### 11.11 安装包：从「向导式」改成「一键式」（0.1.0 的真实装机故障）
 
-`release/` 下已有 `ZhihuishuAuto-Setup-0.1.0.exe`（243 MB）、`win-unpacked/`（779 MB）以及 `builder-debug.yml` 和构建日志；`browsers/` 里是 `chromium-1248` 与 `winldd-1007`（446 MB）。界面相关截图见 `docs/desktop-overview.png`、`docs/desktop-packaged.png`、`docs/ui-settings-desktop.png`（`docs/*.png` 不入库）。
-**安装动作本身没有在本机自动验证成功**，原因不在安装包：
+**用户看到的故障**：双击安装包、一路回车后弹出「ZhihuishuAuto 无法关闭。请手动关闭它，然后单击重试以继续。」（NSIS 的 `appCannotBeClosed`），装不上；换个说法就是「不能打开要写入的文件」。
 
-- 当前开发会话里，DSH 沙箱让**子进程写不进 `%LOCALAPPDATA%`**（`%LOCALAPPDATA%/Programs`、`%LOCALAPPDATA%/Temp` 都写不进去，虽然同一个 shell 自己的 `touch` 可以）。用最小 NSIS 探针（makensis 直接编的 hello-world 安装器）复现：装到工作目录成功、装到 `%LOCALAPPDATA%/Programs` 一个文件都不落地。
-- NSIS 在静默模式下遇到写失败会**吞掉错误并以 0 退出**，所以 electron-builder 的安装包在这里表现为「extract 到 %TEMP% 成功（1 GB）、复制到安装目录失败、5 次重试后退出 0」。换 oneClick 配置也一样，排除模板差异。
-- 静默安装参数还有一层坑：**Git Bash / MSYS 会把 `/S` 改写成路径**（实测 `/S` 变成 `S:/`），安装包收到坏参数就会弹向导；必须在 cmd / PowerShell 里执行，或加 `MSYS2_ARG_CONV_EXCL=*`。
+**根因不在载荷，在安装页的默认选项**：
+- `oneClick: false`（向导式）+ `perMachine: false` 时，electron-builder 的 NSIS 模板仍会插入「为哪位用户安装」页，且**默认选中**「为使用这台电脑的任何人安装（所有用户）」。
+- 用户不切换就直接下一步 → `$INSTDIR = C:\Program Files\ZhihuishuAuto`；而安装器是 `requestedExecutionLevel: asInvoker`、不弹 UAC → 往 `Program Files` 写文件必然失败。
+- `include/extractAppPackage.nsh` 的 `CopyFiles /SILENT` 重试 5 次后弹的正是那条**名不副实**的「无法关闭」对话框，所以现象具有很强误导性（误以为是程序还在运行）。
+- 载荷本身是好的：`7za t` 校验 `Everything is Ok`（921 files / 808 MB），`7za x` 出来的 `ZhihuishuAuto.exe` 能直接跑。
 
-因此安装流程以用户双击验证为准；`win-unpacked` 形态则已完整验证（窗口、托盘、扫码登录、IPC、退出）。
+**修法：一键安装，彻底不出现多用户选择页**
+- `nsis`: `oneClick: true`、`perMachine: false`、`allowElevation: false`、`allowToChangeInstallationDirectory: false`、`runAfterFinish: true`
+- 固定装到 `%LOCALAPPDATA%\Programs\ZhihuishuAuto`（仅当前用户、无需管理员），桌面 + 开始菜单快捷方式名为「智慧树自动听课」。
+
+**顺带清理**：`extraResources` 里 `browsers` 加 `filter: ['**/*', '!_smoke-profile/**']`，并删掉 `browsers/_smoke-profile`（9 MB 冒烟测试残留，之前被打进安装包）。
+
+**为什么本机仍无法自动验证安装**（换过 oneClick、换过安装目录、换过 TEMP 都不行）：
+- 本会话环境里安装器运行在受限上下文——最小 NSIS 探针里 `$TEMP` 被解析成 `C:\Users\lenovo\AppData\Local\Temp\Low`（低完整性目录），安装器对 `%LOCALAPPDATA%\Programs` 的写操作全部失败；同一条 shell 自己 `mkdir`/`copy` 却可以，说明阻塞发生在安装器进程的上下文，而不是目录权限（`icacls` 显示当前用户对该目录全权）。
+- 最小 NSIS 探针（makensis 直接编的 hello-world 安装器）复现：装到工作目录（D:）成功、装到 `%LOCALAPPDATA%\Programs` 一个文件都不落地；用计划任务以 LIMITED 身份再跑一次，结论相同。
+- NSIS 静默模式遇到写失败会**吞掉错误并 0 退出**（或停在重试对话框），所以自动化脚本看到的现象是「解包到 `%TEMP%` 成功 1 GB、目标目录 0 文件、进程不退」。
+- 静默参数还有一层坑：**Git Bash / MSYS 把 `/S` 改写成路径**（实测变成 `S:/`），安装包收到坏参数会退化成弹向导；静默安装要在 cmd / PowerShell 里执行，或加 `MSYS2_ARG_CONV_EXCL=*`。
+
+⇒ **安装流程以用户双击验证为准**；`win-unpacked` 与免安装 zip 形态已完整验证（窗口、托盘、IPC、扫码登录浮层、退出）。
+
+### 11.12 构建产物现状（0.1.0）
+
+`release/` 下：
+- `ZhihuishuAuto-Setup-0.1.0.exe`（约 243 MB，**一键安装**）
+- `ZhihuishuAuto-0.1.0-portable.zip`（约 349 MB，解压即用；`data/` 落在 exe 同级，目录不可写时回退到 `%APPDATA%\ZhihuishuAuto\data`）
+- `win-unpacked/`（约 765 MB）、`builder-debug.yml`、构建日志
+
+`browsers/` 是 `chromium-1248` + `winldd-1007`（446 MB）。界面截图见 `docs/desktop-overview.png`、`docs/desktop-packaged.png`、`docs/ui-settings-desktop.png`（`docs/*.png` 不入库）。

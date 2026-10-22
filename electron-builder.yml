@@ -20,6 +20,9 @@ files:
 extraResources:
   - from: browsers
     to: browsers
+    filter:
+      - '**/*'
+      - '!_smoke-profile/**'
   - from: desktop/update.json
     to: update.json
 
@@ -36,10 +39,13 @@ win:
     - en-US
 
 nsis:
-  oneClick: false
+  # 一键安装：没有向导页，直接装到「当前用户」的 %LOCALAPPDATA%\Programs。
+  # 之前用向导式(oneClick:false)时，多用户选择页默认停在「为使用这台电脑的任何人安装」，
+  # 不在管理员身份下写 C:\Program Files 必然失败，用户看到的就是「ZhihuishuAuto 无法关闭」/「不能打开要写入的文件」。
+  oneClick: true
   perMachine: false
   allowElevation: false
-  allowToChangeInstallationDirectory: true
+  allowToChangeInstallationDirectory: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: 智慧树自动听课

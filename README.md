@@ -13,13 +13,17 @@
 ## 一、安装
 
 1. 拿到安装包，文件名形如 `release\ZhihuishuAuto-Setup-0.1.0.exe`（版本号以文件名里的为准）。
-2. 双击安装。按当前用户安装，**不需要管理员权限**；安装位置可以改，默认在 `%LOCALAPPDATA%\Programs\ZhihuishuAuto`。
-3. 装完桌面和开始菜单里会有「智慧树自动听课」；安装向导勾了「运行」的话会自动打开。
+2. 双击安装。**一键安装**：不弹向导、不问「为哪位用户安装」，固定装到当前用户目录 `%LOCALAPPDATA%\Programs\ZhihuishuAuto`，**不需要管理员权限**，装完自动启动。
+3. 桌面和开始菜单里会有「智慧树自动听课」。
 4. 第一次启动会自动在安装目录下创建 `data/`——登录态、配置、日志都在里面。
 
 > 程序没有做代码签名，Windows 可能提示「未知发布者」。点「更多信息」→「仍要运行」即可。
 
-> 想在命令行里静默安装（跳过向导）：在 **cmd 或 PowerShell** 里执行 `ZhihuishuAuto-Setup-0.1.0.exe /S`。**别在 Git Bash / MSYS 里敲**——那类 shell 会把 `/S` 当成路径改写成别的东西，安装包会退化成弹向导。
+> 0.1.0 早期版本是「向导式」安装包：默认停在「为使用这台电脑的任何人安装（所有用户）」，非管理员身份下往 `C:\Program Files` 写文件会失败，用户看到的是「ZhihuishuAuto 无法关闭 / 不能打开要写入的文件」。**已改成一键安装（仅当前用户）**，新版不会再出现这个问题。
+
+**不想装？用免安装版**：`release\ZhihuishuAuto-0.1.0-portable.zip`，解压到任意**可写**目录（别放 `C:\Program Files`），双击里面的 `ZhihuishuAuto.exe` 就能用，`data/` 就在 exe 旁边。删目录即卸载。
+
+> 想在命令行里静默安装：在 **cmd 或 PowerShell** 里执行 `ZhihuishuAuto-Setup-0.1.0.exe /S`。**别在 Git Bash / MSYS 里敲**——那类 shell 会把 `/S` 当成路径改写成别的东西，安装包会退化成弹向导。
 
 卸载时 `data/` 默认**保留**（见「数据和隐私」）。
 
