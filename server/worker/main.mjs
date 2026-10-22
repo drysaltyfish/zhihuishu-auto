@@ -12,6 +12,8 @@ import path from 'node:path';
 import { askLLM as askLLMShared } from '../llm.mjs';
 import { mergePoints, nearestPoint, markAnswered, nextQuestionOf, toStateList } from './lib/question-points.mjs';
 import { chooseFallback, judge, labelOf, historyEntry } from './lib/answer-strategy.mjs';
+import { DIALOG_BOX_CSS, PLAY_BUTTON_CSS } from './lib/page-scripts.mjs';
+import { createProbe } from './lib/probe.mjs';
 
 const DATA = process.env.ZHS_DATA || path.join(process.cwd(), 'data');
 const PROFILE = path.join(DATA, 'profile');
@@ -91,113 +93,11 @@ const CHROME_ARGS = [
 ];
 
 /* ================= 只读采样 ================= */
-const VSTATE = () => {
-  const vs = Array.from(document.querySelectorAll('video'));
-  if (!vs.length) return null;
-  vs.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);
-  const v = vs[0];
-  return {
-    ct: +(+v.currentTime).toFixed(2),
-    dur: +(+v.duration || 0).toFixed(2),
-    paused: v.paused,
-    rate: v.playbackRate,
-    ended: v.ended,
-    src: (v.currentSrc || v.src || '').slice(0, 120),
-    vis: document.visibilityState,
-    title: document.title,
-    url: location.href,
-  };
-};
-
-/** 弹题弹窗的完整结构（含题面/选项/是否已作答/正确答案/分页） */
-const DIALOG = () => {
-  const sels = ['#playTopic-dialog', '[class*="playTopic"]', '[class*="popupExam"]', '[class*="topicExam"]', '[class*="exam-dialog"]'];
-  let box = null;
-  for (const s of sels) { const e = document.querySelector(s); if (e) { box = e; break; } }
-  if (!box) return { visible: false };
-  const s = getComputedStyle(box);
-  if (s.display === 'none' || s.visibility === 'hidden' || +s.opacity === 0) return { visible: false };
-  const r = box.getBoundingClientRect();
-  if (r.width < 120 || r.height < 60) return { visible: false };
-
-  const lis = Array.from(box.querySelectorAll('ul.topic-list > li, ul.topic-list li'));
-  const options = lis.map((li) => {
-    const active = /active/.test(String(li.className)) || !!li.querySelector('.active');
-    const labelEl = li.querySelector('.topic-option-item');
-    const textEl = li.querySelector('.item-topic');
-    return {
-      label: labelEl ? (labelEl.innerText || '').replace(/\s+/g, ' ').trim() : '',
-      text: textEl ? (textEl.innerText || '').replace(/\s+/g, ' ').trim() : (li.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 400),
-      active,
-    };
-  }).filter((o) => o.text || o.label);
-
-  const titleEl = box.querySelector('.topic-title');
-  const typeEl = box.querySelector('.title-tit');
-  const feedbackEl = box.querySelector('.topic-title .error, .topic-title .correct, .topic-title .right');
-  const answerEl = box.querySelector('.answer');
-  const pages = Array.from(box.querySelectorAll('.el-pager li.number')).map((e) => (e.innerText || '').trim());
-  const activePage = box.querySelector('.el-pager li.number.active');
-  const nextBtn = box.querySelector('.btn-next');
-  const closeBtn = box.querySelector('.el-dialog__footer .btn, .dialog-footer .btn');
-  const headerBtn = box.querySelector('button.el-dialog__headerbtn');
-
-  return {
-    visible: true,
-    id: box.id || '',
-    cls: String(box.className || '').slice(0, 80),
-    title: (titleEl ? titleEl.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 600),
-    type: typeEl ? (typeEl.innerText || '').trim() : '',
-    feedback: feedbackEl ? (feedbackEl.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 20) : '',
-    answered: !!answerEl || !!feedbackEl,
-    answerText: answerEl ? (answerEl.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60) : '',
-    options,
-    optionCount: options.length,
-    pages: pages.length,
-    pageIndex: activePage ? (activePage.innerText || '').trim() : (pages[0] || '1'),
-    hasNextPage: !!(nextBtn && !nextBtn.disabled),
-    hasClose: !!(closeBtn || headerBtn),
-    closeText: closeBtn ? (closeBtn.innerText || '').replace(/\s+/g, ' ').trim() : '',
-    selected: options.filter((o) => o.active).map((o) => o.label),
-  };
-};
-
-/** 在主页 + 所有子 frame 里找可见弹窗（智慧树的弹窗可能在 iframe 里） */
-async function findDialog() {
-  if (!page || page.isClosed()) return null;
-  for (const fr of page.frames()) {
-    try {
-      const d = await fr.evaluate(DIALOG);
-      if (d && d.visible) return { frame: fr, d, frameUrl: fr.url() };
-    } catch {}
-  }
-  return null;
-}
-
-/** 同样在所有 frame 里找视频 */
-async function findVideo() {
-  if (!page || page.isClosed()) return null;
-  let best = null;
-  for (const fr of page.frames()) {
-    try {
-      const v = await fr.evaluate(VSTATE);
-      if (v && v.dur > 0) {
-        if (!best || v.dur > best.v.dur) best = { frame: fr, v };
-      }
-    } catch {}
-  }
-  return best;
-}
-
-async function pageState() {
-  const out = { video: null, dialog: { visible: false } };
-  const fv = await findVideo();
-  if (fv) out.video = fv.v;
-  const fd = await findDialog();
-  if (fd) out.dialog = fd.d;
-  out.dialogFrame = fd ? fd.frame : null;
-  return out;
-}
+// 页内提取脚本在 lib/page-scripts.mjs，frame 适配在 lib/probe.mjs；这里只留三个薄别名。
+const probe = createProbe({ getPage: () => page });
+const findDialog = () => probe.findDialog();
+const findVideo = () => probe.findVideo();
+const pageState = () => probe.pageState();
 
 /* ================= 网络：只监听，不干预 ================= */
 function attachNetwork(target) {
@@ -376,57 +276,8 @@ let questionPointsKey = '';  // 弹题点是哪个视频（lastVideoKey）的
 async function readCourseInfo() {
   if (!page || page.isClosed()) return null;
   try {
-    const info = await page.evaluate(() => {
-      const txt = (e) => (e && (e.innerText || '').replace(/\s+/g, ' ').trim()) || '';
-      const first = (sels) => {
-        for (const s of sels) { const e = document.querySelector(s); const t = txt(e); if (t && t.length < 80) return t; }
-        return '';
-      };
-      const out = [];
-      let curChapter = '';
-      const nodes = Array.from(document.querySelectorAll('li'));
-      for (const li of nodes) {
-        const cls = String(li.className || '');
-        if (!/video|chapter/.test(cls)) continue;
-        if (/chapter-test|test-item/.test(cls)) continue;
-        if (/chapter/.test(cls) && !/video/.test(cls)) { curChapter = txt(li); continue; }
-        if (!/video/.test(cls)) continue;
-        const t = txt(li);
-        if (!t) continue;
-        const pctM = /(\d{1,3})%/.exec(t);
-        const durM = /(\d{2}):(\d{2}):(\d{2})/.exec(t);
-        const codeM = /^(\d+\.\d+)/.exec(t);
-        const icons = Array.from(li.querySelectorAll('i, em, b, span[class]')).map((x) => String(x.className || '')).filter(Boolean).slice(0, 8);
-        const bar = li.querySelector('[role="progressbar"]');
-        const barPct = bar && bar.getAttribute('aria-valuenow');
-        const finished = !!li.querySelector('b.time_icofinish');
-        const half = !!li.querySelector('b.time_ico_half');
-        out.push({
-          code: codeM ? codeM[1] : '',
-          name: t.replace(/^\d+\.\d+\s*/, '').replace(/\s*\d{1,3}%\s*/, ' ').replace(/\s*\d{2}:\d{2}:\d{2}\s*$/, '').trim(),
-          pct: barPct != null ? Number(barPct) : (pctM ? Number(pctM[1]) : null),
-          durText: durM ? durM[0] : '',
-          durSec: durM ? Number(durM[1]) * 3600 + Number(durM[2]) * 60 + Number(durM[3]) : 0,
-          current: /current_play/.test(cls),
-          chapter: curChapter,
-          cls: cls.slice(0, 90),
-          icons,
-          finished,
-          half,
-          doneAttr: finished || /finish|complete|done|already|isLearn|learnd/i.test(cls) || !!li.querySelector('.el-icon-check'),
-          html: out.length < 3 ? li.outerHTML.slice(0, 600) : '',
-        });
-      }
-      return {
-        title: document.title,
-        url: location.href,
-        courseName: first(['.source-name', '.course-name', '.courseName', '.sourceName']),
-        school: first(['.source-down']),
-        chapter: first(['.videotop_lesson']),
-        lesson: first(['.videotop_lesson_tit']),
-        lessons: out,
-      };
-    });
+    const info = await probe.readCourseTree();
+    if (!info) return null;
     dump('pageinfo-' + Date.now() + '.json', JSON.stringify(info, null, 2));
     lessons = info.lessons || [];
     const course = {};
@@ -519,18 +370,7 @@ async function clickLesson(code) {
 
 /** 平台的反脚本提示（合成事件/自动化环境会触发） */
 async function detectAbnormal() {
-  if (!page || page.isClosed()) return '';
-  try {
-    return await page.evaluate(() => {
-      const els = Array.from(document.querySelectorAll('.el-message-box, .el-dialog, .layui-layer, [class*="message-box"]'));
-      for (const e of els) {
-        const t = (e.innerText || '').replace(/\s+/g, ' ');
-        if (!((e.offsetWidth || 0) > 0 && (e.offsetHeight || 0) > 0)) continue;
-        if (t.includes('异常脚本') || t.includes('关闭插件')) return t.slice(0, 160);
-      }
-      return '';
-    });
-  } catch { return ''; }
+  return probe.detectAbnormal();
 }
 
 let lastRecoverAt = 0;
@@ -543,49 +383,11 @@ let verifySince = 0;
 /** 人机验证：平台风控弹出「请完成安全验证」点选验证码，AI 不硬刚，转人工点掉后自动继续
  *  注意腾讯 tcaptcha 的 iframe 是常驻的，平时被放到 y=-1000000，必须判断「在屏幕内」才算弹出 */
 async function detectVerify() {
-  if (!page || page.isClosed()) return '';
-  for (const f of page.frames()) {
-    try {
-      const r = await f.evaluate(() => {
-        const onScreen = (e) => {
-          const b = e.getBoundingClientRect();
-          if (!(b.width > 80 && b.height > 40)) return false;
-          const vw = window.innerWidth || 0;
-          const vh = window.innerHeight || 0;
-          return b.bottom > 0 && b.right > 0 && b.top < vh && b.left < vw && b.top > -200;
-        };
-        const RE = /请完成安全验证|请完成验证|拖动滑块|按住滑块|请依次点击|点击.{0,8}验证/;
-        const boxes = document.querySelectorAll('.el-dialog__wrapper, .el-dialog, [class*="verify"], [class*="captcha"], [class*="yidun"], [class*="geetest"], [class*="nc_wrapper"], [class*="slide"], [id^="tcaptcha"]');
-        for (const e of boxes) {
-          if (!onScreen(e)) continue;
-          const t = (e.innerText || '').replace(/\s+/g, ' ').trim();
-          if (t && RE.test(t)) return t.slice(0, 90);
-        }
-        for (const e of document.querySelectorAll('iframe')) {
-          if (!onScreen(e)) continue;
-          const src = (e.getAttribute('src') || '') + '';
-          if (/captcha|verify|turing\./i.test(src)) return '验证码 iframe';
-        }
-        const t = document.body ? (document.body.innerText || '') : '';
-        if (/请完成安全验证|拖动滑块|按住滑块|请依次点击/.test(t)) return '页面出现安全验证';
-        return '';
-      });
-      if (r) return r;
-    } catch {}
-  }
-  return '';
+  return probe.detectVerify();
 }
 
 async function pauseVideoQuiet() {
-  try {
-    const fv = await findVideo();
-    if (!fv) return;
-    await fv.frame.evaluate(() => {
-      const vs = Array.from(document.querySelectorAll('video'));
-      vs.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);
-      if (vs[0]) { try { vs[0].pause(); } catch {} }
-    });
-  } catch {}
+  await probe.pauseVideoQuiet();
 }
 
 /** 被平台判定异常后：重新进入视频页，接着看 */
@@ -673,15 +475,8 @@ async function ensurePlaying() {
   if (!fv) return false;
   if (!fv.v.paused) return true;
   if (await findDialog()) return false;
-  try {
-    await fv.frame.evaluate(() => {
-      const vs = Array.from(document.querySelectorAll('video'));
-      vs.sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);
-      const v = vs[0];
-      if (v) { try { v.muted = true; } catch {} try { const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch {} }
-    });
-  } catch {}
-  for (const sel of ['.play-btn', '.vjs-big-play-button', '.prism-big-play-btn', '.controls-play', '.prism-play-btn']) {
+  await probe.playInFrame(fv.frame);
+  for (const sel of PLAY_BUTTON_CSS) {
     try {
       const loc = page.locator(sel).first();
       if (await loc.isVisible({ timeout: 800 })) { await loc.click({ timeout: 2000 }); break; }
@@ -707,13 +502,7 @@ async function askLLM(d) {
 async function dumpDialogDetail(fd, tag) {
   if (!DEBUG) return;
   try {
-    const info = await fd.frame.evaluate(() => {
-      const sels = ['#playTopic-dialog', '[class*="playTopic"]', '[class*="popupExam"]', '[class*="topicExam"]', '[class*="exam-dialog"]'];
-      let box = null;
-      for (const s of sels) { const e = document.querySelector(s); if (e) { box = e; break; } }
-      if (!box) return null;
-      return { html: box.outerHTML.slice(0, 40000), frameUrl: location.href };
-    });
+    const info = await probe.dialogHtml(fd.frame);
     if (!info) return;
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     dump('dialog-' + tag + '-' + ts + '.html', '<!-- frame: ' + info.frameUrl + ' -->\n' + info.html);
@@ -723,7 +512,7 @@ async function dumpDialogDetail(fd, tag) {
 }
 
 function dialogBox(frame) {
-  return frame.locator('#playTopic-dialog, [class*="playTopic"], [class*="popupExam"], [class*="topicExam"], [class*="exam-dialog"]').first();
+  return frame.locator(DIALOG_BOX_CSS).first();
 }
 
 /** 点某个选项（真实点击；点完平台会自动提交） */
@@ -1050,29 +839,7 @@ async function listCourses(notify) {
       await shot('learnhome-fail-' + Date.now() + '.png');
       throw new Error('学堂页面里没找到课程卡片（可能没登录或页面改版），已存 data/debug 供排查');
     }
-    const list = await tab.evaluate(() => {
-      const txt = (e) => (e && (e.innerText || '').replace(/\s+/g, ' ').trim()) || '';
-      const out = [];
-      const nodes = Array.from(document.querySelectorAll('.item-left-course'));
-      nodes.forEach((el, i) => {
-        const spans = Array.from(el.querySelectorAll('.teacherName span')).map(txt).filter(Boolean);
-        const pctTxt = txt(el.querySelector('.processNum'));
-        const m = /([\d.]+)\s*%/.exec(pctTxt);
-        const dl = el.closest('dl');
-        const a = dl ? dl.querySelector('.right-item-course a[href*="recruitId"]') : null;
-        const rm = a ? /recruitId=(\d+)/.exec(a.href) : null;
-        out.push({
-          i,
-          name: txt(el.querySelector('.courseName')),
-          teacher: spans[0] || '',
-          school: spans[1] || '',
-          now: txt(el.querySelector('.nowCourse .name')),
-          pct: m ? Number(m[1]) : null,
-          recruitId: rm ? rm[1] : '',
-        });
-      });
-      return out;
-    });
+    const list = await probe.readCourseList(tab);
     if (list.length) { courses = list; coursesAt = Date.now(); }
     if (notify) patch({ courses, coursesAt });
     log('ok', '读到 ' + list.length + ' 门课：' + list.map((c) => c.name + (c.pct != null ? '（' + c.pct + '%）' : '')).join('、'));
@@ -1335,7 +1102,7 @@ process.on('message', async (m) => {
     } else if (m.cmd === 'pause') {
       userPaused = true;
       patch({ phase: 'PAUSED' });
-      try { const fv = await findVideo(); if (fv) await fv.frame.evaluate(() => { const v = document.querySelector('video'); if (v) v.pause(); }); } catch {}
+      try { await pauseVideoQuiet(); } catch {}
       log('info', '已暂停');
     } else if (m.cmd === 'resume') {
       userPaused = false;
