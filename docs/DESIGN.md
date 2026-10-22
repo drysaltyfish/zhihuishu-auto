@@ -331,7 +331,7 @@ const nextQ = computed(() => {
 **npm test 接线**：`package.json` 加 `"test": "node --test"`。
 **坑**：必须裸 `node --test`，不能写成 `node --test test/`——Node 24 下带目录参数会报 `MODULE_NOT_FOUND`；裸跑时 Node 自己递归发现 `test/**/*.test.mjs`，也天然跳过 `node_modules`。
 
-**现状**：5 个测试文件 53 项全绿——`answer-strategy` 8 / `page-scripts` 9 / `question-points` 12 / `tick` 17 / `web-next-question` 7。前四个是候选 01/02 把 worker 主循环决策、页内提取脚本、答题策略、弹题点推理抽成纯函数后的回归；最后一个是候选 04 拆 `App.vue` 后 `nextQ` 算法的回归。
+**现状**：本任务提交时 5 个测试文件 53 项全绿——`answer-strategy` 8 / `page-scripts` 9 / `question-points` 12 / `tick` 17 / `web-next-question` 7。前四个是候选 01/02 把 worker 主循环决策、页内提取脚本、答题策略、弹题点推理抽成纯函数后的回归；最后一个是候选 04 拆 `App.vue` 后 `nextQ` 算法的回归。候选 05 拆 `server/lib/` 时又给 actions / logs / router / sse-hub / llm-check 补了单测，具体项数以 `npm test` 输出的 `# pass` 行为准。
 
 **与 selftest 的分工**：
 - `npm test`：纯函数、无浏览器、无端口、毫秒级，改完代码就应跑；
