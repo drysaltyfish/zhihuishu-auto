@@ -121,12 +121,25 @@ export const COURSE_TREE = () => {
     return '';
   };
   const out = [];
+  const tests = [];
   let curChapter = '';
   const nodes = Array.from(document.querySelectorAll('li'));
   for (const li of nodes) {
     const cls = String(li.className || '');
-    if (!/video|chapter/.test(cls)) continue;
-    if (/chapter-test|test-item/.test(cls)) continue;
+    if (!/video|chapter|test/.test(cls)) continue;
+    // 测试节点要排在章头判断之前：它自己不带章名，得靠前面记住的 curChapter 归属
+    if (/chapter-test|test-item/.test(cls)) {
+      const t = txt(li);
+      // b.finish = 这章的测试已经交过（平台课程树上有对勾）；没交过是
+      // span.iconbaizhoumoshi-zhangceshi-shubiaoyiru（hover 图标）。
+      if (t) tests.push({
+        chapter: curChapter,
+        text: t.replace(/\s*\d{1,3}%\s*$/, '').trim(),
+        cls: cls.slice(0, 90),
+        done: !!li.querySelector('b.finish'),
+      });
+      continue;
+    }
     if (/chapter/.test(cls) && !/video/.test(cls)) { curChapter = txt(li); continue; }
     if (!/video/.test(cls)) continue;
     const t = txt(li);
@@ -163,6 +176,7 @@ export const COURSE_TREE = () => {
     chapter: first(['.videotop_lesson']),
     lesson: first(['.videotop_lesson_tit']),
     lessons: out,
+    tests,
   };
 };
 

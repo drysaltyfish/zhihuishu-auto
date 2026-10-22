@@ -67,6 +67,7 @@ function startTask({ res }) {
   engine.ready().then(() => engine.control('settings', {
     autoAnswer: state.answers.auto,
     autoAdvance: state.answers.advance,
+    quizAuto: state.quizAuto,
   })).catch((e) => logs.push('warn', '推送开关失败：' + String((e && e.message) || e).slice(0, 120)));
   json(res, 200, { ok: true });
 }
@@ -75,7 +76,7 @@ function controlTask({ res, body }) {
   const name = String(body.action || '');
   const r = resolveControl(name, { phase: state.phase, mock: MOCK, debug: DEBUG });
   if (!r.ok) throw httpError(r.status, r.message, r.hint);
-  engine.control(name);
+  engine.control(name, body.data);
   const patch = actionPatch(name);
   if (patch) { applyPatch(state, patch); hub.stateChanged(); }
   json(res, 200, { ok: true });
@@ -92,6 +93,11 @@ function updateSettings({ res, body }) {
     out.autoAdvance = body.autoAdvance;
     applyPatch(state, { answers: { advance: body.autoAdvance } });
     logs.push('info', body.autoAdvance ? '已开启「看完自动跳下一节」' : '已关闭自动跳节（看完这一节会停下等你选）');
+  }
+  if (typeof body.quizAuto === 'boolean') {
+    out.quizAuto = body.quizAuto;
+    applyPatch(state, { quizAuto: body.quizAuto });
+    logs.push('info', body.quizAuto ? '已开启自动做章节测试' : '已关闭自动做章节测试（仍可在面板里手动点）');
   }
   if (Object.keys(out).length) { engine.control('settings', out); hub.stateChanged(); }
   json(res, 200, { ok: true });

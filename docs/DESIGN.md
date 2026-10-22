@@ -375,3 +375,38 @@ const nextQ = computed(() => {
 - `node scripts/selftest.mjs` → **41/41 PASS**（真实引擎空闲页 + mock 全流程 + 提示条/下一题回归，说明拆分没有改变对外行为）；
 - `node scripts/boottest.mjs` → PASS（真实 worker 拉起 Chrome → WAIT_LOGIN → 退出 STOPPED，验证 `ready()` 与队列没把启动卡住）；
 - mock 手动烟测：`/api/state` 正常、重复 start 回 409「任务已经在运行了」、未配 key 的 `/api/llmcheck` 回 `{ok:false, why:'未配置 API Key'}`、未知动作回 400「不支持的操作」、SSE 2 秒内收到 7 个事件、静态页 200。
+
+### 10.13 章节「平时测试」自动答题（2026-10-22）
+
+**目标（用户拍板）**：只做每章「平时测试」；答完自动点提交并确认；某章视频全部看完后自动做该章测试。
+
+**模块**（worker 侧，全部可单测的纯逻辑 + 一层真实点击）：
+
+| 文件 | 职责 |
+|---|---|
+| `worker/lib/quiz-scripts.mjs` | 试卷页只读提取：`QUIZ_PAPER`（题目/题型/题干/选项/勾选态/答题卡/按钮）、是否已交查看页 `review`、`QUIZ_RESULT` |
+| `worker/lib/quiz-logic.mjs` | `buildQuizPrompt`、`normalizeType`、`parseLetters`、`chooseLetters`、`fallbackIdxs`、`planSelection`、`groupChapters`、`pickChapterToQuiz`、`quizListOf`、`platformDoneMap`、`parsePaperMeta`、`parseResult` |
+| `worker/lib/quiz-runner.mjs` | 打开试卷 → 逐题（作答 → 下一题）→ 交卷；`run(key,{noSubmit})` 支持干跑 |
+| `worker/lib/quiz-store.mjs` | `data/quizzes.json` 断点（按章节名存 status/score/total/count/answered/note） |
+| `server/worker/main.mjs` | `autoQuiz/quizChapters/quizzes/testDone`、`runQuiz(key)`、`maybeAutoQuiz()`（8 秒节流，主循环里不阻塞）、`cmd quiz`（含 `dry` 调试） |
+| `web/src/components/ChapterQuiz.vue` | 状态卡：自动开关、做题进度、每章 tag/得分/「现在做」 |
+
+**关键实现点**
+
+1. **勾选态不是原生 checked**：智慧树点选后给 `.ABCase` 与 `.node_detail` 加 class `onChecked`，`input.checked` 恒 false（未选 img src `e7778644…`、选中 `134c9fe7…`）。`QUIZ_PAPER.checked = (input ? !!input.checked : false) || !!lab.querySelector('.onChecked')`；`applySelection` 点完回读，两轮补点。
+2. **点选项只选中，点「下一题」才保存**：逐题必须真的翻页；最后一题没有「下一题」是正常的（日志会 warn 一次）。
+3. **已交卷子会打开成「查看」页**（URL `#/webExamList/checkHomework/…`，没有「提交作业」，每题带「本题的得分」）：`review = /checkHomework/i.test(location.href) || (graded && !hasSubmit)`，runner 命中直接返回 `{ok:true,status:'already'}`，绝不重答。
+4. **课程树上的已交标记**：测试节点里有 `<b class="finish">` = 已交；没交是 `span.iconfont.iconbaizhoumoshi-zhangceshi-shubiaoyiru`。`COURSE_TREE` 的 `tests[]` 带 `{chapter,text,done}` → `platformDoneMap` → `quizListOf(chapters,quizzes,platformDone)`；平台标记优先，卡片显示「已交（之前）」；本地已记 done 的仍算 self（自己刚交的）。
+5. **模型回复抠不出字母**：先按「答案/应选/字母打头/全文唯一字母」四规则解析；失败再问一次（prompt 追加「只回复选项字母」），仍失败才兜底。
+6. **点测试入口有空点**：播放页正在切节/弹题时第一下可能不弹标签页，runner 等 3 秒、重读课程树再点一次。
+7. **答案会被平台暂存**；干跑（`dry:true`）填完整份不提交，用来验证解析链路，正式跑整份覆盖。
+
+**真实站点验证（2026-10-22 11:28–11:52，账号已登录）**
+
+- 第一章 7 题 **14/14**、第二章 8 题 **16/16**（自动接力：第一章做完自己挑第二章）；第四章 6 题 **12/12**（全自动，未人工干预）。
+- 第三章（用户此前自己交过）→ 点开后识别 `checkHomework` 查看页，2 秒内返回 `{status:'already', score:16}`，日志「平台显示已经交过了（得分 16），跳过」。
+- 第五章干跑：7 题 30 秒填完、**零「点了但勾选状态不对」**（修复前每章连报 6~7 次并靠 repair 兜底）；只有最后一题 warn「翻页失败（没有下一题）」。
+- 界面：`quizChapters` 13 章全部识别，已交章显示「已交」，未做章「未做（7 题 / 12 分）」。
+
+**新增单测**：`quiz-logic`（解析/分章/已交合并）、`quiz-scripts`（真实试卷夹具含 onChecked、查看页 review）、`quiz-store`、`page-scripts` 的 `tests[].done`；`npm test` **129/129 pass**，`node scripts/selftest.mjs` **46/46 PASS**（新增章节测试卡片/进度/交卷 5 项）。
+

@@ -8,6 +8,8 @@ const CONTROL = {
   resume: { guard: 'running', patch: () => ({ paused: false }) },
   restart: { guard: 'startable', patch: () => ({ notice: '', phase: 'LAUNCHING', paused: false }) },
   quit: { guard: 'running', patch: () => ({ paused: true, phase: 'STOPPED', video: { paused: true } }) },
+  // 手动做某一章的平时测试（key 为空由 worker 自己挑；key='__retry' 清掉失败状态）
+  quiz: { guard: 'running' },
   // 下面的动作界面上不出现：mock 自检和 debug 摸页面结构用
   verify: { guard: 'any', mockOnly: true },
   unverify: { guard: 'any', mockOnly: true },

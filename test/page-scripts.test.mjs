@@ -89,6 +89,26 @@ test('COURSE_TREE：解析章节标题、节的编号/名称/进度/时长/当�
   assert.equal(b.half, false);
 });
 
+test('COURSE_TREE：测试节点带 chapter 归属，b.finish 表示平台已交', async () => {
+  await load([
+    '<ul>',
+    '<li class="clearfix font_gray_inclined chapter">第一章 心理健康概述</li>',
+    '<li class="clearfix video"><span>1.1 心理健康概述</span><span>00:21:04</span></li>',
+    '<li class="clearfix chapter-test"><span>平时测试</span><b class="finish"></b></li>',
+    '<li class="clearfix font_gray_inclined chapter">第二章 大学生自我意识</li>',
+    '<li class="clearfix chapter-test"><span>平时测试</span><span class="iconfont iconbaizhoumoshi-zhangceshi-shubiaoyiru"></span></li>',
+    '</ul>',
+  ].join(''));
+  const info = await pg.evaluate(COURSE_TREE);
+  assert.equal(info.lessons.length, 1);
+  assert.equal(info.tests.length, 2);
+  assert.equal(info.tests[0].chapter, '第一章 心理健康概述');
+  assert.equal(info.tests[0].text, '平时测试');
+  assert.equal(info.tests[0].done, true);
+  assert.equal(info.tests[1].chapter, '第二章 大学生自我意识');
+  assert.equal(info.tests[1].done, false);
+});
+
 test('ABNORMAL：识别「异常脚本」提示框', async () => {
   await load('<div class="el-message-box">检测到异常脚本，为保证您的正常学习进度，请您关闭插件后，回到学堂重新进入视频学习页正常学习</div>');
   assert.match(await pg.evaluate(ABNORMAL), /异常脚本/);

@@ -9,13 +9,16 @@
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
-import { askLLM as askLLMShared } from '../llm.mjs';
+import { askLLM as askLLMShared, askQuiz } from '../llm.mjs';
 import { mergePoints, nearestPoint, markAnswered, nextQuestionOf, toStateList } from './lib/question-points.mjs';
 import { chooseFallback, judge, labelOf, historyEntry } from './lib/answer-strategy.mjs';
 import { DIALOG_BOX_CSS, PLAY_BUTTON_CSS } from './lib/page-scripts.mjs';
 import { createProbe } from './lib/probe.mjs';
 import { decide } from './lib/tick.mjs';
 import { saveCookies, loadCookies } from './lib/session-store.mjs';
+import { createQuizRunner } from './lib/quiz-runner.mjs';
+import { groupChapters, pickChapterToQuiz, quizListOf, platformDoneMap } from './lib/quiz-logic.mjs';
+import { loadQuizzes, saveQuizzes } from './lib/quiz-store.mjs';
 
 const DATA = process.env.ZHS_DATA || path.join(process.cwd(), 'data');
 const PROFILE = path.join(DATA, 'profile');
@@ -51,6 +54,12 @@ let pageInfoDumped = false;
 let lastVideoSwitchAt = 0;
 let lastPhase = 'PLAYING'; // 上一次推给前端的 phase（避免每秒重复发同一条）
 let lastCookieSaveAt = 0;  // 上次保存登录态的时间（Cookie 会滚动刷新，定期落盘）
+let autoQuiz = true;        // 自动做每章「平时测试」
+let quizChapters = [];      // 课程树按章归组（readCourseInfo 里更新）
+let quizzes = {};           // 章节测试断点：{ [章节名]: {status,score,title,at,count,total,answered,note} }
+let testDone = {};          // 课程树上标了「已交」的章节测试：{ [章节名]: true }
+let lastQuizCheck = 0;      // 上次检查「有没有该做的测试」的时间
+let quizBusy = false;       // 正在做测试（同一时间只跑一份）
 
 /* ---------------- 配置（LLM 用） ---------------- */
 const DEFAULT_CONFIG = {
@@ -102,6 +111,21 @@ const probe = createProbe({ getPage: () => page });
 const findDialog = () => probe.findDialog();
 const findVideo = () => probe.findVideo();
 const pageState = () => probe.pageState();
+
+/* 章节测试执行器：点课程树的「平时测试」→ 新标签页逐题作答 → 提交 */
+const quizRunner = createQuizRunner({
+  getPage: () => page,
+  getCtx: () => ctx,
+  readTree: () => probe.readCourseTree(),
+  log,
+  patch,
+  getLlm: () => CONFIG.llm,
+  askQuiz,
+  sleep,
+  dump,
+  shot,
+  debug: DEBUG,
+});
 
 /* ================= 网络：只监听，不干预 ================= */
 function attachNetwork(target) {
@@ -323,9 +347,13 @@ async function readCourseInfo() {
       return { watched: w, total: t, pct: t ? Math.round((w / t) * 100) : null };
     };
     const inChapter = cur ? lessons.filter((l) => l.chapter === cur.chapter) : [];
+    quizChapters = groupChapters(lessons);
+    testDone = platformDoneMap(info && info.tests);
     patch({
       lessons: lessons.map((l) => ({ code: l.code, name: l.name, pct: l.pct, durText: l.durText, durSec: l.durSec, current: l.current, chapter: l.chapter, done: l.doneAttr })),
       summary: { chapter: sumOf(inChapter), course: sumOf(lessons) },
+      quizzes: quizListOf(quizChapters, quizzes, testDone),
+      quizChapters: quizChapters.map((c) => ({ chapter: c.chapter, total: c.total, done: c.done, allDone: c.allDone })),
     });
     if (DEBUG) log('debug', '课程树：' + lessons.length + ' 节，已完成 ' + lessons.filter((l) => l.doneAttr).length + ' 节；当前 ' + (cur ? cur.code + ' ' + cur.name + '（' + (cur.doneAttr ? '已完成' : cur.pct == null ? '未开始' : cur.pct + '%') + '）' : '未识别'));
     return info;
@@ -754,6 +782,8 @@ async function loop() {
     for (const p of plan.patches) patch(p);
     for (const l of plan.logs) log(l.kind, l.msg);
     for (const e of plan.effects) await runEffect(e, st);
+    // 章节测试在后台跑，不挡住主循环（视频还在播，弹题也还要答）
+    if (!quizBusy) { const pending = maybeAutoQuiz(); if (pending && pending.catch) pending.catch(() => {}); }
     if (Date.now() - lastCookieSaveAt > 180000) { lastCookieSaveAt = Date.now(); await persistLogin('定期'); }
   } catch (e) {
     log('err', '主循环异常（已忽略）：' + String(e && e.message || e).slice(0, 200));
@@ -1044,11 +1074,95 @@ async function probeLearnHome() {
   }
 }
 
+/* ========== 章节测试（平时测试） ========== */
+function quizListNow() { return quizListOf(quizChapters, quizzes, testDone); }
+
+/** 跑一章的平时测试：跑之前先落「正在做」，避免重启后又挑同一章 */
+async function runQuiz(key) {
+  if (quizBusy) return { ok: false, note: '已经在做测试了' };
+  if (!started || stopped || !page || page.isClosed()) return { ok: false, note: '还没开始听课' };
+  const target = quizChapters.find((c) => c.key === key);
+  const title = (quizzes[key] && quizzes[key].title) || ((target && target.chapter) || key) + '·平时测试';
+  quizBusy = true;
+  quizzes[key] = { ...(quizzes[key] || {}), status: 'doing', title, at: Date.now() };
+  saveQuizzes(DATA, quizzes);
+  patch({ quizzes: quizListNow(), quiz: { running: true, key, title, i: 0, n: null, answered: 0, strategy: '', last: null, result: null, error: '' } });
+  log('info', '开始做「' + title + '」的章节测试');
+  try {
+    const res = await quizRunner.run(key);
+    const prev = quizzes[key] || {};
+    if (res && res.status === 'already') {
+      // 平台说这份已经交过了：记成 done（和别的章节一样不再重做），顺便把课程树的标记也刷新
+      quizzes[key] = {
+        ...prev,
+        status: 'done',
+        title: res.title || title,
+        score: res.score == null ? null : res.score,
+        total: res.total == null ? null : res.total,
+        count: res.count == null ? null : res.count,
+        answered: res.answered || 0,
+        at: Date.now(),
+        note: res.note || '平台显示这份测试已经交过',
+        source: 'platform',
+      };
+      if (res.chapter && res.chapter !== key) testDone[res.chapter] = true;
+      testDone[key] = true;
+      const scoreText = res.score == null ? '' : '（得分 ' + res.score + (res.total ? '/' + res.total : '') + '）';
+      patch({ quiz: { running: false, result: null }, notice: '章节测试「' + (res.title || title) + '」之前已经交过了' + scoreText + '，跳过' });
+      log('ok', '章节测试「' + (res.title || title) + '」之前已经交过' + scoreText + '，跳过');
+    } else if (res && res.ok) {
+      quizzes[key] = {
+        ...prev,
+        status: 'done',
+        title: res.title || title,
+        score: res.score == null ? null : res.score,
+        total: res.total == null ? null : res.total,
+        count: res.count == null ? null : res.count,
+        answered: res.answered || 0,
+        at: Date.now(),
+        note: res.note || '',
+      };
+      const scoreText = res.score == null ? '已提交' : ('得分 ' + res.score + (res.total ? '/' + res.total : '') + ' 分');
+      patch({ quiz: { running: false, result: { score: res.score == null ? null : res.score, total: res.total == null ? null : res.total, text: scoreText } }, notice: '章节测试「' + (res.title || title) + '」' + scoreText });
+      log('ok', '章节测试「' + (res.title || title) + '」完成，' + scoreText);
+    } else {
+      quizzes[key] = { ...prev, status: 'failed', title, at: Date.now(), note: (res && res.note) || '没做完' };
+      patch({ quiz: { running: false, error: (res && res.note) || '没做完' }, notice: '章节测试「' + title + '」没自动完成：' + ((res && res.note) || '原因未知') });
+      log('warn', '章节测试「' + title + '」没完成：' + ((res && res.note) || ''));
+    }
+  } catch (e) {
+    quizzes[key] = { ...(quizzes[key] || {}), status: 'failed', title, at: Date.now(), note: String((e && e.message) || e).slice(0, 120) };
+    patch({ quiz: { running: false, error: String((e && e.message) || e).slice(0, 120) } });
+    log('err', '章节测试出错：' + String((e && e.message) || e).slice(0, 160));
+  } finally {
+    quizBusy = false;
+    saveQuizzes(DATA, quizzes);
+    patch({ quizzes: quizListNow() });
+    // 做完一份，课程树/测试状态可能变了，重新读一次
+    readCourseInfo().catch(() => {});
+  }
+}
+
+/** 主循环里定期看看有没有「整章都看完、还没做」的测试 */
+async function maybeAutoQuiz() {
+  if (!autoQuiz || quizBusy || !started || stopped || userPaused) return;
+  if (!quizChapters.length) return;
+  if (Date.now() - lastQuizCheck < 8000) return;
+  lastQuizCheck = Date.now();
+  const cur = lessons.find((l) => l.current) || null;
+  const target = pickChapterToQuiz(quizChapters, quizListNow(), cur && cur.chapter);
+  if (!target) return;
+  await runQuiz(target.key);
+}
+
 async function doStart() {
   if (started) return;
   started = true;
   try {
     CONFIG = loadConfig();
+    quizzes = loadQuizzes(DATA);
+    lastQuizCheck = 0;
+    patch({ quizAuto: autoQuiz, quizzes: quizListNow(), quiz: { running: false } });
     if (!CONFIG.llm.apiKey) log('warn', '没有配置答题用的 API Key：弹题出现时会停下等你手动答（在 data/config.json 填 llm.apiKey 可启用自动答题）');
     await launch();
     if (!(await ensureLogin())) { stopped = true; return; }
@@ -1120,10 +1234,37 @@ process.on('message', async (m) => {
       await probeVerify();
     } else if (m.cmd === 'probe') {
       await probeLearnHome();
+    } else if (m.cmd === 'quiz') {
+      // 手动做某一章的测试：key 为空就挑下一个该做的
+      let key = m.data && m.data.key;
+      if (key === '__retry') {
+        // 手动重试：把失败状态清掉，让自动挑章重新看上它
+        for (const k of Object.keys(quizzes)) if (quizzes[k] && quizzes[k].status === 'failed') quizzes[k].status = 'todo';
+        saveQuizzes(DATA, quizzes);
+        patch({ quizzes: quizListNow() });
+        key = '';
+      }
+      if (!key) {
+        const cur = lessons.find((l) => l.current) || null;
+        const target = pickChapterToQuiz(quizChapters, quizListNow(), cur && cur.chapter);
+        key = target && target.key;
+      }
+      if (!key) { log('info', '没有需要做的章节测试了'); patch({ notice: '没有需要做的章节测试了（要么没看完，要么都做过了）' }); }
+      else if (quizBusy) { patch({ notice: '正在做另一份测试，等这份做完再试' }); }
+      else if (m.data && m.data.dry) {
+        // 调试用：把整份试卷填一遍但不点提交（答案会被平台暂存，之后正式跑会整份覆盖）
+        quizBusy = true;
+        quizRunner.run(key, { noSubmit: true })
+          .then((r) => log('info', '干跑完成（没有提交）：' + JSON.stringify(r)))
+          .catch((e) => log('err', '干跑出错：' + String((e && e.message) || e).slice(0, 160)))
+          .finally(() => { quizBusy = false; });
+      }
+      else runQuiz(key).catch((e) => log('err', '手动做测试失败：' + String((e && e.message) || e).slice(0, 160)));
     } else if (m.cmd === 'settings') {
       if (m.data && typeof m.data.autoAnswer === 'boolean') autoAnswer = m.data.autoAnswer;
       if (m.data && typeof m.data.autoAdvance === 'boolean') autoAdvance = m.data.autoAdvance;
-      if (m.data && typeof m.data.autoAnswer !== 'boolean' && typeof m.data.autoAdvance !== 'boolean') autoAnswer = !!m.data;
+      if (m.data && typeof m.data.quizAuto === 'boolean') { autoQuiz = m.data.quizAuto; patch({ quizAuto: autoQuiz }); }
+      if (m.data && typeof m.data.autoAnswer !== 'boolean' && typeof m.data.autoAdvance !== 'boolean' && typeof m.data.quizAuto !== 'boolean') autoAnswer = !!m.data;
       CONFIG = loadConfig();
       patch({ answers: { auto: autoAnswer, advance: autoAdvance, strategy: CONFIG.llm && CONFIG.llm.apiKey ? 'llm' : 'random' } });
     }

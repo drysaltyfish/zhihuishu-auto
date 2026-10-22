@@ -5,6 +5,7 @@ import { phaseText as phaseLabelOf } from './domain/format.js';
 import { useAction } from './composables/useAction.js';
 import CoursePanel from './components/CoursePanel.vue';
 import QuizPanel from './components/QuizPanel.vue';
+import ChapterQuiz from './components/ChapterQuiz.vue';
 import LogPanel from './components/LogPanel.vue';
 import './app.css';
 
@@ -161,6 +162,7 @@ onBeforeUnmount(() => { if (es) es.close(); });
         <QuizPanel
           :state="S" :courses-busy="!!coursesBusy" :is-idle="isIdle" :is-stopped="isStopped"
           :say="say" @refresh-courses="loadCourses" @pick-course="pickCourse" />
+        <ChapterQuiz :state="S" :say="say" />
       </aside>
     </main>
 

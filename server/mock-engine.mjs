@@ -22,6 +22,16 @@ const MOCK_COURSES = [
   { i: 2, name: '中国近现代史纲要', teacher: '王老师', school: '某某大学', now: '3.2 辛亥革命', pct: 61, recruitId: '' },
 ];
 
+const MOCK_QUIZZES = [
+  { key: '第一章 心理健康概述', chapter: '第一章 心理健康概述', title: '第一章 心理健康概述·平时测试', status: 'todo', count: 7, total: 12, score: null, answered: 0, at: 0, note: '' },
+  { key: '第二章 大学生自我意识', chapter: '第二章 大学生自我意识', title: '第二章 大学生自我意识·平时测试', status: 'done', count: 8, total: 16, score: 14, answered: 8, at: 0, note: '' },
+];
+
+const MOCK_QUIZ_CHAPTERS = [
+  { chapter: '第一章 心理健康概述', total: 3, done: 1, allDone: false },
+  { chapter: '第二章 大学生自我意识', total: 2, done: 0, allDone: false },
+];
+
 const QP = [
   { timeSec: 425, questionIds: '1097920778' },
   { timeSec: 1259, questionIds: '1097920779' },
@@ -32,6 +42,7 @@ export function createMockEngine(state, emit, pushLog) {
   let answerAt = null;
   let mockCurrent = '1.1';
   let mockCourse = MOCK_COURSES[0].name;
+  let quizSim = null;
 
   function reset() {
     applyPatch(state, {
@@ -50,6 +61,9 @@ export function createMockEngine(state, emit, pushLog) {
       currentQid: null,
       nextQuestion: { atSec: 425, etaSec: 28.6, questionId: '1097920778' },
       history: [],
+      quizChapters: MOCK_QUIZ_CHAPTERS.map((c) => ({ ...c })),
+      quizzes: MOCK_QUIZZES.map((q) => ({ ...q })),
+      quiz: { running: false, key: '', title: '', i: 0, n: null, answered: 0, strategy: '', last: null, result: null, error: '' },
     });
     recompute();
   }
@@ -84,8 +98,42 @@ export function createMockEngine(state, emit, pushLog) {
   }
 
   /** 一拍：推进视频 / 弹题 / 切节。改完状态由调用方统一广播。 */
+  function startQuiz(key) {
+    const list = state.quizzes || [];
+    const target = key ? list.find((q) => q.key === key) : list.find((q) => q.status === 'todo');
+    if (!target) { pushLog('info', 'mock：没有需要做的章节测试了'); applyPatch(state, { notice: '没有需要做的章节测试了' }); return true; }
+    target.status = 'doing';
+    applyPatch(state, {
+      quiz: { running: true, key: target.key, title: target.title, i: 0, n: target.count, answered: 0, strategy: 'llm', last: null, result: null, error: '' },
+      notice: '正在做「' + target.title + '」',
+    });
+    pushLog('info', 'mock：开始做「' + target.title + '」（' + target.count + ' 题）');
+    quizSim = { key: target.key, i: 0, n: target.count || 5 };
+    return true;
+  }
+
   function tickOnce() {
     if (state.phase === 'STOPPED' || state.paused) return;
+
+    // mock 的章节测试：每拍答一题，答完自动提交
+    if (quizSim && state.quiz && state.quiz.running) {
+      quizSim.i += 1;
+      state.quiz.i = quizSim.i;
+      state.quiz.answered = quizSim.i;
+      state.quiz.last = { num: quizSim.i, type: '【单选题】', chosen: ['A'], result: '已选' };
+      if (quizSim.i >= quizSim.n) {
+        const q = (state.quizzes || []).find((x) => x.key === quizSim.key);
+        if (q) { q.status = 'done'; q.score = Math.min(q.total || q.count || 10, 8 + Math.floor(Math.random() * 5)); q.answered = q.count; q.at = Date.now(); }
+        state.quiz.running = false;
+        const score = q ? q.score : null;
+        const total = q ? q.total : null;
+        state.quiz.result = { score, total, text: score == null ? '已提交' : '得分 ' + score + (total ? '/' + total : '') + ' 分' };
+        pushLog('ok', 'mock：「' + state.quiz.title + '」提交完成，' + state.quiz.result.text);
+        quizSim = null;
+      }
+      recompute();
+      return;
+    }
 
     const due = state.questionPoints.find((x) => !x.answered && state.video.ct >= x.timeSec);
     if (due && !answerAt) {
@@ -155,8 +203,10 @@ export function createMockEngine(state, emit, pushLog) {
       if (action === 'settings') {
         if (data && typeof data.autoAnswer === 'boolean') state.answers.auto = data.autoAnswer;
         if (data && typeof data.autoAdvance === 'boolean') state.answers.advance = data.autoAdvance;
+        if (data && typeof data.quizAuto === 'boolean') state.quizAuto = data.quizAuto;
         return true;
       }
+      if (action === 'quiz') return startQuiz(data && data.key);
       if (action === 'lesson') { switchLesson((data && data.code) || ''); return true; }
       if (action === 'courses') {
         applyPatch(state, { courses: MOCK_COURSES, coursesAt: Date.now() });

@@ -138,6 +138,27 @@ const ok = (name, cond, extra) => { results.push({ name, pass: !!cond, extra: ex
   ok('运行页有测试模型按钮', t1.includes('测试模型'), '');
   ok('运行页有「我的课程」卡', t1.includes('我的课程') && t1.includes('刷新'), '');
 
+  // 章节测试卡片：列出每章、点「现在做」能跑起来并显示进度
+  const quizCard = page.locator('.card').filter({ hasText: '自动做章节测试' }).first();
+  const tq = (await quizCard.count()) ? await quizCard.innerText() : '';
+  ok('运行页有章节测试卡片', tq.includes('章节测试') && tq.includes('自动做章节测试'), tq.slice(0, 80));
+  const qRows = await page.locator('.qrow').count();
+  ok('章节测试列出每一章', qRows >= 2, '行数 ' + qRows);
+  const qTag = await page.locator('.qtag.done').first().innerText().catch(() => '');
+  ok('已交的章显示「已交」+得分', qTag.includes('已交'), qTag);
+  const firstDo = page.locator('.qrow button').filter({ hasText: '现在做' }).first();
+  if (await firstDo.count()) {
+    await firstDo.click();
+    await sleep(1600);
+    const qTxt = (await quizCard.innerText()).replace(/\n/g, ' ');
+    ok('点「现在做」后显示做题进度', /第\s*\d+\s*\/\s*\d+\s*题/.test(qTxt), qTxt.slice(0, 120));
+    await sleep(3200);
+    const qTxt2 = (await quizCard.innerText()).replace(/\n/g, ' ');
+    ok('mock 做完后章节变成已交', /已交/.test(qTxt2) && !/做题中/.test(qTxt2), qTxt2.slice(0, 120));
+  } else {
+    ok('点「现在做」后显示做题进度', false, '没有「现在做」按钮');
+  }
+
   // 人机验证时界面要明确告诉用户「要在浏览器窗口点一下」
   await api(base, s.token, '/api/control', { action: 'verify' });
   await sleep(800);

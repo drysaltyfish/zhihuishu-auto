@@ -156,6 +156,7 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
       if (action === 'verifyprobe') return send('verifyprobe', data);
       if (action === 'courses') return send('courses', data);
       if (action === 'course') return send('course', data);
+      if (action === 'quiz') return send('quiz', data);
       return false;
     },
     /** index 在 start() 之后等它，再推开关；worker 一直没起来时最多等 60 秒 */

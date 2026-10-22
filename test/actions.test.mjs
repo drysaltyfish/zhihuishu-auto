@@ -43,6 +43,14 @@ test('probe/verifyprobe 只在 debug 下存在，且要求正在跑', () => {
   assert.equal(resolveControl('probe', { phase: 'PLAYING', mock: false, debug: true }).ok, true);
 });
 
+test('章节测试：跑起来才能做，空闲时给友好拒绝', () => {
+  assert.equal(resolveControl('quiz', { phase: 'PLAYING', mock: false, debug: false }).ok, true);
+  const r = resolveControl('quiz', { phase: 'IDLE', mock: false, debug: false });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, 409);
+  assert.match(r.hint, /开始听课/);
+});
+
 test('isStoppedPhase 只认 IDLE/STOPPED', () => {
   assert.equal(isStoppedPhase('IDLE'), true);
   assert.equal(isStoppedPhase('STOPPED'), true);
