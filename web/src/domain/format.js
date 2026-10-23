@@ -40,7 +40,14 @@ export function phaseText(state) {
 export function statusText(state) {
   if (!state) return '—';
   const p = state.phase;
-  if (p === 'PLAYING') return state.video.paused ? '缓冲中' : '播放中';
+  if (p === 'PLAYING') {
+    if (!state.video.paused) return '播放中';
+    // 播到 100% 时播放器是暂停的，但状态还挂在 PLAYING（worker 正在找下一节）。
+    // 以前这里一律显示「缓冲中」，看起来像卡在网络，其实是结尾在等切节。
+    const pct = state.summary && state.summary.section ? state.summary.section.pct : null;
+    if (pct != null && pct >= 99) return '本节播完，正在切下一节';
+    return '缓冲中';
+  }
   if (p === 'ARMED') return '待命等弹题';
   if (p === 'ANSWERING') return '正在作答';
   if (p === 'WAIT_VERIFY') return '等待人机验证';

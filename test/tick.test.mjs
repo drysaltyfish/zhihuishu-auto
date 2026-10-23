@@ -12,6 +12,7 @@ test('INITIAL_MEM 字段齐全且可取', () => {
     'lastVideoKey',
     'lastCt',
     'endedLogged',
+    'endedAttempts',
     'stallTicks',
     'frozenCt',
     'frozenTicks',
@@ -98,6 +99,30 @@ test('结尾只报一次：第二拍不再记日志/拍照', () => {
   assert.ok(!plan2.logs.some((l) => l.msg.includes('播完')));
   assert.ok(!plan2.effects.some((e) => e.type === 'shot'));
   assert.equal(plan2.flow, 'ended');
+});
+
+test('结尾切不动会隔几拍再试：不是只试一次就永远停在结尾', () => {
+  const mem = mem0({ lastVideoKey: 'v1|600', pageInfoDumped: true });
+  const tried = [];
+  for (let i = 0; i < 17; i++) {
+    const plan = decide(obs({ video: video({ ct: 600, ended: true }) }), mem, cfg0());
+    if (plan.effects.some((e) => e.type === 'advance')) tried.push(i);
+  }
+  assert.deepEqual(tried, [0, 8, 16], '第 1 拍立刻切，之后每 8 拍再试一次');
+});
+
+test('换节后结尾记忆清掉：下一节播完还能再触发切节（修复「有时不自动跳」）', () => {
+  // 上一节播完、切走：主循环里的记忆还留着 endedLogged=true
+  const mem = mem0({ lastVideoKey: 'v1|600', endedLogged: true, endedAttempts: 3, lastPhase: 'ENDED' });
+  // 新一节在播（key 变了）
+  const playing = decide(obs({ video: video({ src: 'v2', dur: 300, ct: 5 }) }), mem, cfg0());
+  assert.equal(playing.mem.endedLogged, false);
+  assert.equal(playing.mem.endedAttempts, 0);
+  // 新一节播到结尾：必须重新记为「播完」并尝试切节
+  const end = decide(obs({ video: video({ src: 'v2', dur: 300, ct: 300, ended: true }) }), mem, cfg0());
+  assert.equal(end.flow, 'ended');
+  assert.ok(end.logs.some((l) => l.msg.includes('播完')));
+  assert.ok(end.effects.some((e) => e.type === 'advance' && e.force === true));
 });
 
 test('自动跳节关着：ENDED 的提示改成让用户自己选', () => {

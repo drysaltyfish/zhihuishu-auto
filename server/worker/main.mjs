@@ -60,6 +60,7 @@ let stallTicks = 0;
 let lastVideoKey = '';
 let lastUrl = '';
 let endedLogged = false;
+let endedAttempts = 0; // 到结尾后已尝试切节的次数（tick.mjs 用它决定要不要过几拍再试）
 let pageInfoDumped = false;
 let lastVideoSwitchAt = 0;
 let lastPhase = 'PLAYING'; // 上一次推给前端的 phase（避免每秒重复发同一条）
@@ -799,6 +800,10 @@ async function clickLesson(code) {
           if (before && key !== before) {
             lastVideoKey = key;
             lastCt = fv.v.ct;
+            // 是我们自己把视频点走的：把上一节「已经播完」的记忆清掉，
+            // 否则新一节播完时 tick 会以为已经处理过，永远不再尝试切节（界面停在 PLAYING+暂停，看着像缓冲中）
+            endedLogged = false;
+            endedAttempts = 0;
             await sleep(1500);
             await readCourseInfo();
             log('ok', '已切到 ' + code + '，时长 ' + Math.round(fv.v.dur) + 's，从 ' + Math.round(fv.v.ct) + 's 继续');
@@ -870,6 +875,8 @@ async function recoverFromAbnormal(why) {
     if (fv) {
       lastVideoKey = fv.v.src + '|' + Math.round(fv.v.dur);
       lastCt = fv.v.ct;
+      endedLogged = false;
+      endedAttempts = 0;
       await readCourseInfo();
       await applyPlaying();
       patch({ phase: 'PLAYING', notice: '' });
@@ -1417,6 +1424,7 @@ async function loop() {
         lastVideoKey,
         lastCt,
         endedLogged,
+        endedAttempts,
         stallTicks,
         frozenCt,
         frozenTicks,
@@ -1432,6 +1440,7 @@ async function loop() {
       lastVideoKey,
       lastCt,
       endedLogged,
+      endedAttempts,
       stallTicks,
       frozenCt,
       frozenTicks,
@@ -1656,6 +1665,7 @@ async function switchCourseInner(index) {
     lastVideoKey = '';
     questionPoints = [];
     endedLogged = false;
+    endedAttempts = 0;
     await readCourseInfo();
     patch({ phase: 'PLAYING', pickHint: '', notice: '已切到「' + (want.name || '新课') + '」' });
     await applyPlaying();
@@ -2051,6 +2061,7 @@ process.on('message', async (m) => {
       patch({ phase: 'PLAYING', manualHint: '', notice: '' });
       if (wasManual) {
         endedLogged = false; // 允许再试一轮自动切节；再失败还会重新转人工
+        endedAttempts = 0;
         try {
           await readCourseInfo(); // 人工可能换了节，重新对一遍当前是哪一节
         } catch {}
@@ -2068,6 +2079,7 @@ process.on('message', async (m) => {
       questionPoints = [];
       lastVideoKey = '';
       endedLogged = false;
+      endedAttempts = 0;
       pageInfoDumped = false;
       verifyPending = false;
       verifySince = 0;

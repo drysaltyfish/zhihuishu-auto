@@ -433,10 +433,10 @@ loop():
 | flow | 条件 | 主要动作 |
 | --- | --- | --- |
 | `novideo` | 页面里找不到视频 | `noVideoTicks` 到 3 warn、到 6 切 `COURSE_PICK`、每 12 拍 `recoverPage` |
-| `ended` | `ended` 为真，或 `ct >= dur - 1.5`（播完不置 ended 的播放器） | 首次日志+截图；未暂停则 `advance {force:true}`；没有下一节 → `ENDED` |
+| `ended` | `ended` 为真，或 `ct >= dur - 1.5`（播完不置 ended 的播放器） | 首次日志+截图+`notice`「本节播完了，正在切下一节…」；未暂停则 `advance {force:true}`，之后每 8 拍（`ENDED_RETRY_TICKS`）重试一次；没有下一节 → `ENDED` |
 | `paused` | 用户主动暂停 | 清 `stallTicks` |
 | `stalled` | 视频暂停但无弹窗（非用户暂停） | 3 拍后 `ensurePlaying`；每 60 拍提示一次；>300 拍 → `PAUSED`「视频像是卡住了」 |
-| `playing` | 正在播放 | 补 `phase:'PLAYING'`；`!userPaused && !dialog` → `advance {force:false}`（内部 15 s 节流） |
+| `playing` | 正在播放 | 补 `phase:'PLAYING'`；清 `endedLogged`/`endedAttempts`（换节后能再次触发切节）；`!userPaused && !dialog` → `advance {force:false}`（内部 15 s 节流） |
 | `dialog` | 弹窗可见 + 自动答题开 | effect `handleDialog` |
 | `dialog-manual` | 弹窗可见 + 自动答题关 | 首次提示 + `PAUSED`「弹题等你手动作答」 |
 | `idle` | 其它（启动初期/切换中） | 无 |
@@ -444,6 +444,8 @@ loop():
 代价与取舍写在 `tick.mjs` 头注释里：这段逻辑原本长在 1422 行的 `main.mjs` 里、119 个分支、36 个模块级 `let`；抽成纯函数后不 import playwright、不 await、不碰全局，所以能单测（`test/tick.test.mjs`）。
 
 **自动切节失败会退位让人接手。** `advance` 的落点是 `maybeAdvanceLesson()`：它按 15 s 节流调用 `clickLesson()`（真实鼠标点课程树，内部已重试 3 次），成功后清 `switchFails` 并 `applyPlaying()`；失败则累计轮数，连续 2 轮（`SWITCH_FAIL_LIMIT`）仍失败就调 `enterManualFix()`：置 `manualPaused = userPaused = true`（借 `decide()` 的 `paused` 分支停掉自动切节与自动播放）、暂停视频、patch `{ phase:'PAUSED', manualHint }`，再用 `showBrowserWindow()` 把隐藏的浏览器窗口叫到前台。此后 `maybeAdvanceLesson()` 直接被 `manualPaused` 挡回，`runEffect` 也不会再补 `onFalse` 的 `ENDED` 状态。用户手动点好一节后点「继续」（`resume`）会清掉这套状态、重置 `endedLogged`、重读课程信息并恢复播放。提示用独立的 `manualHint` 字段（`notice` 只活 7 秒），前端 `store.js` 的 `hint` 给它 `sticky` 标记、不渲染关闭按钮。纯函数部分在 `server/worker/lib/manual-fix.mjs`，单测 `test/manual-fix.test.mjs`。
+
+**到结尾后切节会重试，且换节后清掉「已播完」记忆。** `decide()` 的 `ended` 分支不是只发一次 `advance`：第一拍立刻发，之后每 8 拍（`ENDED_RETRY_TICKS`）再发一次，避免「那一刻课程树还没刷新 / 页面正忙」导致永久停在结尾；同时 `paused` / `stalled` / `playing` 三个分支每拍都把 `endedLogged` 与 `endedAttempts` 清零。原因是 `clickLesson()` 自己切节成功时会直接改写 `lastVideoKey`（为了不误报「平台自动跳节」），下一拍的 key 不变，「已播完」标记里的旧 `true` 就再也不会复位 —— 于是**凡是由「播完→切节」链路切过去的一节，它自己播完时不再触发切节**（2026-10-23 用户反馈「有时播完不跳」的根因，详见 `docs/DESIGN.md` §11.18）。
 
 **「学前必读」这类提示弹窗会被自动关掉。** 平台常在高频切课时弹「学前必读 / 学习须知」：半透明遮罩盖住整页，真实鼠标点击全落在遮罩上，视频永远不换——这是「切课点了没反应」的另一个元凶（11.14 的转人工只是兜底）。处理同样是三层：页内只读脚本 `NOTICES`（`page-scripts.mjs`）只负责把可见的候选弹窗读成 `{text, path, buttons, closeIcons, checkbox}`，并排除弹题容器（`#playTopic-dialog` / `ul.topic-list`）；纯逻辑 `planNoticeClose()`（`notice.mjs`）判断能不能关、点哪个按钮（优先「我知道了/关闭」，其次「开始学习」，需要先勾「我已阅读」时先勾），弹题与验证类（提交答案/安全验证/滑块/验证码）一律不碰；`main.mjs` 的 `dismissNotices()` 用 `probe.scanNotices()` 跨 frame 收集候选、按 path 做真实鼠标点击、700 ms 后复扫确认。挂钩在 `clickLesson()` 前后、`gotoCourse()` 进入课程页之后，以及主循环 `pageState()` 之后（4 秒冷却）。单测 `test/notice.test.mjs`（纯逻辑）与 `test/notice-page.test.mjs`（Playwright + `test/fixtures/notice-prelecture.html`）。
 
@@ -759,7 +761,7 @@ runQuiz(key):
 
 ### 11.1 `npm test`（`node --test`）
 
-18 个测试文件、共 167 个用例，覆盖「不需要真浏览器的逻辑」；其中 `page-scripts` / `notice-page` / `quiz-scripts` 会真起本机 Chrome 验页内脚本（见下表）。
+19 个测试文件、共 174 个用例，覆盖「不需要真浏览器的逻辑」；其中 `page-scripts` / `notice-page` / `quiz-scripts` 会真起本机 Chrome 验页内脚本（见下表）。
 
 | 测试文件 | 覆盖对象 | 要点 |
 | --- | --- | --- |
@@ -779,7 +781,8 @@ runQuiz(key):
 | `test/router.test.mjs` | `server/lib/router.mjs` | fake `req/res`：token 403、405、404、`expose` 错误透出 |
 | `test/session-store.test.mjs` | `server/worker/lib/session-store.mjs` | Cookie 挑选、7 天有效期、往返 |
 | `test/sse-hub.test.mjs` | `server/lib/sse.mjs` | 帧格式、首帧补发、去重、合并推送 |
-| `test/tick.test.mjs` | `server/worker/lib/tick.mjs` | `decide()` 各 `flow` 分支与补丁内容 |
+| `test/tick.test.mjs` | `server/worker/lib/tick.mjs` | `decide()` 各 `flow` 分支与补丁内容；结尾切节的 8 拍重试、换节后记忆清零 |
+| `test/format-status.test.mjs` | `web/src/domain/format.js` | `statusText()`：播放中/本节播完待切节/中途暂停仍「缓冲中」的分界 |
 | `test/web-next-question.test.mjs` | `web/src/domain/next-question.js` | 「下一题」本地推算 |
 
 注意：`page-scripts` / `quiz-scripts` 两个测试依赖本机装了 Chrome（`channel:'chrome'`），无 Chrome 的机器上会失败。

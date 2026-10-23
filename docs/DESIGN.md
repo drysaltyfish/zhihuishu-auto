@@ -781,3 +781,30 @@ body{overflow:hidden}
 
 **取舍**：只关「认得出且一定能安全关掉」的提示，看不清的一律留着并记 `info` 日志（宁可少关，不可误关弹题或验证框）；扫描有 4 秒冷却，不拖慢每秒一拍的采样节奏；点击仍走 Playwright 真实鼠标（`isTrusted`），不用 JS 点。
 
+### 11.18 播完不自动跳下一节、界面卡在「缓冲中」（2026-10-23 复盘）
+
+**现象**：有用户反馈「播放完视频有时还是不会自动跳下一节，界面提示缓冲中」。界面状态栏的「缓冲中」来自 `web/src/domain/format.js` 的 `statusText()`：只有 `phase === 'PLAYING'` 且 `video.paused === true` 才显示。所以这不是网络缓冲，而是**状态还停在播放中、视频其实已经停在结尾**。
+
+**用户日志里的证据**（`data/logs/server.log`，worker 的日志在这里，不在 main.log）：
+
+- 11:35:13 4.2 播完 → `视频停在结尾（已到 100% 但没触发 ended）` → 自动切到 4.3 成功（`已切到 4.3，时长 598s`）。
+- 4.3 播到 598s（11:45 前后）后**什么日志都没有**，既不报「播完」，也不尝试切节；界面一直停在 PLAYING + 暂停（=「缓冲中」）。
+- 11:50:21 `视频进度回退：598.08s → 0s`，11:50:34 `视频已切换（平台自动跳下一节…）：新时长 660s` —— 这两条是用户自己打开浏览器窗口点走的，不是自动化切的。
+
+**根因**：`tick.mjs` 里「本节已播完」只处理一次，靠 `mem.endedLogged` 去重；这个标记只在**下一拍发现视频 key 变化**时复位。但我们自己切节时 `clickLesson()` 会把 `lastVideoKey/lastCt` 直接改成新视频的值（避免误报「平台自动跳节」），下一拍看到 key 没变 → `endedLogged` 永远留在 `true` → 新一节播完时整段 `if (!mem.endedLogged)` 被跳过：**不写日志、不拍快照、不发 advance**，于是永远停在结尾。这也解释了「有时」：凡是由「播完 → 切节」这条链路切过去的一节，它自己的结尾一定不会再触发；由平台/用户手动切过去的则正常（key 变化会复位）。
+
+**改法**：
+
+1. `server/worker/lib/tick.mjs`：
+   - 新增 `endedAttempts` 记忆。到结尾后第一拍立刻发 `advance`，之后每 `ENDED_RETRY_TICKS = 8` 拍再试一次（`endedAttempts % 8 === 0`）——以前只发一次，一旦那一刻课程树没刷新/页面正忙，就再也不试。
+   - 不在结尾的分支（`paused` / `stalled` / `playing`）每拍把 `endedLogged` 和 `endedAttempts` 清零：这样即使主循环没察觉 key 变化，新一节播完也能重新触发切节。
+   - 第一次判定到结尾时额外 `patch({ notice: '本节播完了，正在切下一节…' })`，界面上不再毫无解释地停在「缓冲中」。
+2. `server/worker/main.mjs`：`clickLesson()` 成功切到新视频时、`recoverFromAbnormal()` 重新进页面后，都显式 `endedLogged = false; endedAttempts = 0`；`switchCourse()` / 转人工后 `resume` / `restart` 也一并清零。`decide()` 的记忆对象与解构里加上 `endedAttempts`。
+3. `web/src/domain/format.js` 的 `statusText()`：`PLAYING + 暂停` 时如果 `summary.section.pct >= 99` 显示「本节播完，正在切下一节」，否则才是「缓冲中」。避免把「结尾等切节」误报成网络问题。
+
+**测试**：`test/tick.test.mjs` 新增「结尾切不动会隔几拍再试」（第 1、9、17 拍各发一次 advance）与「换节后结尾记忆清掉：下一节播完还能再触发切节」；新增 `test/format-status.test.mjs` 5 个用例锁住 `statusText` 文案。全仓 `npm test` 174 pass / 0 fail（此前 167）。
+
+**取舍**：重试间隔按「拍」而不是按墙钟秒（一拍 ≈ 1s，但 `advance` 的 effect 会被 await，实际可能更慢），好处是纯函数、可单测；连续切节失败仍由 11.15 的 `advanceFailStep` 累计到 2 轮后转人工，不会无限点。
+
+**排查提示**：以后再看这类问题，直接读运行目录下的 `data/logs/server.log`（worker 日志），不是 `main.log`（只有主进程启动/退出）。关键行：「本节视频播完了 / 视频停在结尾」「本节 X 已看完，自动切到 Y」「点了 X 但视频没变」。
+

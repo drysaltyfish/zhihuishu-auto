@@ -28,6 +28,7 @@
  * @property {string} lastVideoKey
  * @property {number} lastCt
  * @property {boolean} endedLogged
+ * @property {number} endedAttempts 这一节到结尾后已经尝试切了几次（切不动就隔几拍重试，不能只试一次）
  * @property {number} stallTicks
  * @property {number} frozenCt
  * @property {number} frozenTicks
@@ -42,6 +43,7 @@ export const INITIAL_MEM = Object.freeze({
   lastVideoKey: '',
   lastCt: 0,
   endedLogged: false,
+  endedAttempts: 0,
   stallTicks: 0,
   frozenCt: -1,
   frozenTicks: 0,
@@ -54,6 +56,10 @@ export const INITIAL_MEM = Object.freeze({
 
 const ENDED_NOTICE = (autoAdvance) =>
   autoAdvance ? '本节已播完，没找到能自动切过去的下一节' : '本节播完了；自动跳节是关的，请在课程目录里选下一节';
+
+// 到结尾后第一次立刻切；切不动（课程树没刷新、页面正忙、点了没反应）就每隔这么多拍再试一次。
+// 以前只在第一拍发一次 advance，一旦失败就永远停在结尾：界面停在 PLAYING+暂停，看起来像「缓冲中」。
+const ENDED_RETRY_TICKS = 8;
 
 /**
  * 一次决策。
@@ -94,6 +100,7 @@ export function decide(obs, mem, cfg) {
       mem.lastVideoSwitchAt = Date.now();
       push('info', '视频已切换（平台自动跳下一节或换了课）：新时长 ' + Math.round(v.dur) + 's');
       mem.endedLogged = false;
+      mem.endedAttempts = 0;
       effect({ type: 'resetPoints' });
       mem.lastCt = v.ct;
       effect({ type: 'readCourseInfo' });
@@ -117,12 +124,16 @@ export function decide(obs, mem, cfg) {
       flow = 'ended';
       if (!mem.endedLogged) {
         mem.endedLogged = true;
+        mem.endedAttempts = 0;
         push(
           'warn',
           (v.ended ? '本节视频播完了' : '视频停在结尾（已到 100% 但没触发 ended）') + '，看看有没有下一节可切'
         );
+        patch({ notice: '本节播完了，正在切下一节…' });
         effect({ type: 'shot', name: 'ended-' + Date.now() + '.png' });
-        if (!cfg.userPaused) {
+      }
+      if (!cfg.userPaused) {
+        if (mem.endedAttempts % ENDED_RETRY_TICKS === 0) {
           effect({
             type: 'advance',
             force: true,
@@ -130,12 +141,19 @@ export function decide(obs, mem, cfg) {
           });
           mem.lastPhase = 'ENDED';
         }
+        mem.endedAttempts++;
       }
     } else if (cfg.userPaused) {
       flow = 'paused';
       mem.stallTicks = 0;
+      mem.endedLogged = false;
+      mem.endedAttempts = 0;
     } else if (v.paused && !dialog.visible) {
       flow = 'stalled';
+      // 不在结尾就清掉「结尾」记忆：换节后即使主循环没察觉到 key 变化（我们自己点了课程树），
+      // 下一节播完也能重新触发切节
+      mem.endedLogged = false;
+      mem.endedAttempts = 0;
       mem.stallTicks++;
       if (mem.stallTicks >= 3) {
         effect({ type: 'ensurePlaying' });
@@ -156,6 +174,8 @@ export function decide(obs, mem, cfg) {
       }
     } else {
       flow = 'playing';
+      mem.endedLogged = false;
+      mem.endedAttempts = 0;
       mem.stallTicks = 0;
       mem.frozenTicks = 0;
       mem.frozenCt = -1;
