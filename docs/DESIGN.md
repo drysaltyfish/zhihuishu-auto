@@ -808,3 +808,21 @@ body{overflow:hidden}
 
 **排查提示**：以后再看这类问题，直接读运行目录下的 `data/logs/server.log`（worker 日志），不是 `main.log`（只有主进程启动/退出）。关键行：「本节视频播完了 / 视频停在结尾」「本节 X 已看完，自动切到 Y」「点了 X 但视频没变」。
 
+
+### 11.19 打包卡在下载 winCodeSign（2026-10-23）
+
+**现象**：`npm run dist` 走到 `packaging platform=win32` 之后长时间没输出，10 分钟后失败：
+
+```
+⨯ Timeout awaiting 'request' for 600000ms  failedTask=build
+```
+
+**原因**：electron-builder 26 打包 Windows 产物时要下载 `winCodeSign-2.6.0.7z`（里面有 `rcedit`，用来把图标、版本号写进 exe；和代码签名证书无关）。它默认从 GitHub releases 取，国内网络经常卡到超时。该包不在 `%LOCALAPPDATA%\electron-builder\Cache` 里时才会联网。
+
+**处理**：
+
+1. 设镜像再打包：`ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`（可同时设 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 加速 Electron 本体）。
+2. 或手动预置缓存：从 <https://npmmirror.com/mirrors/electron-builder-binaries/winCodeSign-2.6.0/winCodeSign-2.6.0.7z> 下载，放到 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign-2.6.0\winCodeSign-2.6.0.7z`，校验 sha256 = `cdaec7154dda7cc31f88d886e2489379a0625a737d610b5ae7f62a12f16743a4`、字节数 5,635,384。下次打包直接复用，不联网。
+3. `nsis-3.0.4.1` / `nsis-resources-3.4.1` / `7zip` 也缓存在同目录；portable 目标的启动器就是 NSIS 编出来的，缺了同样会联网。
+
+**顺带**：`CSC_IDENTITY_AUTO_DISCOVERY=false` 让 electron-builder 跳过签名尝试（没证书时会白跑一遍 signtool）。日志里的 `signing with signtool.exe path=...` 无证书时是空跑，产物仍是 `NotSigned`。

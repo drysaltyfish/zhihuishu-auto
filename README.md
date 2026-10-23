@@ -298,6 +298,7 @@ npm run dist
 ```
 
 - 打包前会先跑 `npm run web:build`（`desktop:dir` 和 `dist` 都包含）。
+- 打包卡在 `packaging` 很久、最后报 `Timeout awaiting 'request' for 600000ms`：这是 electron-builder 在从 GitHub 下载 `winCodeSign-2.6.0.7z`（内含 `rcedit`，用来写 exe 的图标和版本信息，不是签名证书）。设好上面两个镜像环境变量即可；也可以手动下载后放到 `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign-2.6.0\winCodeSign-2.6.0.7z`（5,635,384 字节，sha256 `cdaec7154dda7cc31f88d886e2489379a0625a737d610b5ae7f62a12f16743a4`），下次打包直接命中缓存。
 - `dist` 一次出两个产物，靠扩展名区分：`-portable.exe` 是单文件免安装版（自解压到临时目录），`-portable.zip` 就是目录版（`win-unpacked` 直接压缩），两者用同一份代码和 `data/` 规则。
 - 包体积主要来自内置 Chromium（`browsers/`，约 446 MB）；没执行过 `browsers:install` 时打出来的包缺少内置浏览器，只能依赖系统 Chrome。
 - `release/` 里的 `builder-debug.yml`、`*.log` 是构建日志，可以删。
