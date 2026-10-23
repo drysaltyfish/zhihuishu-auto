@@ -461,13 +461,15 @@ body{overflow:hidden}
 
 界面本身没有重写：`web/` 的 Vue 构建产物还是同一份（`server/public/`），桌面壳只是把本地服务的地址装进 `BrowserWindow`。引擎、状态机、反检测策略全部留在 `server/` 与 `server/worker/` 里，桌面版和「浏览器 + `node server/index.mjs`」共用同一套代码。
 
+> 说明：11.1 的选型与 11.11 的装机复盘记录的是 NSIS 安装包时代；交付形态后来改成纯免安装（portable + zip），差异与最终结论见 **11.13**，打包配置以 `electron-builder.yml` 为准。
+
 ### 11.1 选型
 
 | 组件 | 用途 | 为什么用它而不是自己写 |
 | --- | --- | --- |
 | Electron | 桌面壳 + 自带 Node 与 Chromium 运行时 | 打包产物里的 `electron.exe` 设置 `ELECTRON_RUN_AS_NODE=1` 后就是 Node，`server/index.mjs` 一行不改；也不存在「渲染进程里跑引擎」那种权限和安全问题 |
-| electron-builder | NSIS 安装包 | per-user 安装、extraResources、asar 开关、语言包都是配置项 |
-| electron-updater | 更新 | generic 静态目录即可发布，NSIS 配 blockmap 走差分下载，不用自己写下载/校验/替换 |
+| electron-builder | Windows 打包（现在出免安装 `portable` + `zip`） | 免安装目标、extraResources、asar 开关、语言包都是配置项；最初用的是 NSIS 安装包，已弃用（原因见 11.13） |
+| electron-updater | 更新 | generic 静态目录即可发布、配 blockmap 走差分下载，不用自己写下载/校验/替换；但 `portable` 目标不产出 `latest.yml`，免安装形态下已直接禁用（见 11.13） |
 | electron-log | 日志 | 主进程日志落文件、未捕获异常捕获、单文件尺寸上限，省掉一套轮转实现 |
 
 ### 11.2 进程模型
@@ -538,7 +540,7 @@ body{overflow:hidden}
 - **关闭窗口 = 隐藏**：`close` 事件里看 `quitting` 标志，没在退出就 `preventDefault()` + `hide()`；`window-all-closed` 不做任何事——托盘常驻，程序不退出。
 - **托盘**（`desktop/tray.mjs`）：菜单「打开界面 / 开机自动启动（勾选）/ 退出」；单击或双击图标也能打开界面；tooltip「智慧树自动听课」。
 - **单实例**：`requestSingleInstanceLock()` 拿不到锁直接退出；第二个实例触发 `second-instance`，把已有窗口 show / restore（也就是从托盘叫出来）。
-- **开机自启**：`app.setLoginItemSettings({ openAtLogin, path: process.execPath, args: ["--hidden"] })`；带 `--hidden` 启动时只进托盘、不弹窗。只在打包版生效，开发模式点开关会返回「开发模式不写开机自启」。
+- **开机自启**：`app.setLoginItemSettings({ openAtLogin, path: autoStartPath(), args: ["--hidden"] })`，`autoStartPath()` 取 `paths.launchExe`——单文件免安装版登记的是启动器给的原始 exe（`PORTABLE_EXECUTABLE_FILE`），不是 `%TEMP%` 里的 `process.execPath`（用后者会让开机自启指向已删除的临时目录）；带 `--hidden` 启动时只进托盘、不弹窗。只在打包版生效，开发模式点开关会返回「开发模式不写开机自启」。
 - **退出**：`before-quit` 里置 `quitting`、停 server 子进程、销毁托盘。
 - **启动失败**：先显示 splash（data URL「正在启动本地服务…」）；服务起不来或子进程非 0 退出，就加载 `desktop/error.html?msg=…`，页面「重试」走 `retryServer` IPC，「退出程序」直接退出。
 
@@ -562,13 +564,13 @@ body{overflow:hidden}
 
 ### 11.7 更新策略
 
-- **默认禁用**：`resources/update.json` 的 `url` 为空 → 状态 `disabled`，文案「当前版本没有配置更新源，需要更新请重新下载安装包」。
+- **默认禁用**：`resources/update.json` 的 `url` 为空 → 状态 `disabled`，文案「当前版本没有配置更新源，需要更新请重新下载新版」；免安装形态下不论 url 如何都直接 `disabled`，提示「免安装版不支持自动更新：下载新版后解压覆盖即可」。
 - **url 优先级**：环境变量 `ZHS_UPDATE_URL` > `resources/update.json`；非 http(s) 一律当未配置。
 - **更新源**：`provider:"generic"`，静态目录放 `latest.yml` + 安装包 + `.blockmap`。
 - **手动触发**：`autoDownload=false`、`autoInstallOnAppQuit=false`，只有用户点「检查更新」才发起；检查 25 秒超时。
 - **状态**：`disabled / idle / checking / available / downloading / none / ready / error`，事件都转成中文文案给界面。
-- **安装**：`desktop:installUpdate` → 未下载就 `downloadUpdate()`，已下载就 `quitAndInstall(false, true)`（先退出再装、装完自动启动）。**界面目前只接了 `desktop:checkUpdate`**，没有放下载/安装按钮；能力在 IPC / preload 这一层是齐的，要开放只需界面上加一个按钮。
-- **差分**：electron-updater 按 blockmap 只下载变化的块；安装仍是 NSIS 覆盖安装；升级不碰 `data/`。
+- **安装**：`desktop:installUpdate` → 未下载就 `downloadUpdate()`，已下载就 `quitAndInstall(false, true)`（先退出再装、装完自动启动）。界面已接上「检查更新」，有新版时给「下载并重启安装」按钮（`web/src/pages/Settings.vue` 的 `installUpdate`）；但**免安装形态下这条链路整体 disabled**，按钮只会给出「免安装版不支持自动更新」的提示。
+- **差分/NSIS 已不适用**：`portable` 目标 `isWriteUpdateInfo: false`，不产出 `latest.yml` 与 `.blockmap`，electron-updater 无从比对版本。真要做免安装版的自动更新，得自己实现「下载新版 zip → 解压覆盖、保留 `data/`」，目前没做。
 - 开发模式（`!app.isPackaged`）直接 `disabled`，不读配置。
 
 ### 11.8 asar:false 的取舍
@@ -580,40 +582,41 @@ body{overflow:hidden}
 - worker 通过 `win-window.ps1` 调 PowerShell；
 - Playwright 需要真实的可执行文件与 profile 路径。
 
-所以 `asar:false`：安装目录里就是解开的文件，路径逻辑与开发态完全一致，排错能直接看文件。
+所以 `asar:false`：程序目录里就是解开的文件，路径逻辑与开发态完全一致，排错能直接看文件。
 
-代价：文件多、首启比 asar 略慢、资源可被替换（本地小工具，接受）；装完 `win-unpacked` 约 779 MB（含 browsers）。真要开 asar 的话，需要给 `server/` 与 `server/worker/` 配 `asarUnpack`，或者把这几块拆到 `extraResources`；`browsers/` 与 `update.json` 现在已经是 extraResources，不受影响。
+代价：文件多、首启比 asar 略慢、资源可被替换（本地小工具，接受）；解包后约 780 MB（含 `browsers/`）。真要开 asar 的话，需要给 `server/` 与 `server/worker/` 配 `asarUnpack`，或者把这几块拆到 `extraResources`；`browsers/` 与 `update.json` 现在已经是 extraResources，不受影响。
 
 ### 11.9 打包配置要点（electron-builder.yml）
 
 | 配置 | 值 | 说明 |
 | --- | --- | --- |
-| `appId` | `com.zhihuishu.auto` | NSIS 的升级 / 卸载标识，改了等于换一个产品 |
-| `productName` | `ZhihuishuAuto` | 安装目录、进程名、快捷方式基础名 |
-| `output` | `release/` | 安装包与 `win-unpacked` 都在这 |
+| `appId` | `com.zhihuishu.auto` | 应用标识（AppUserModelId、单实例与托盘身份） |
+| `productName` | `ZhihuishuAuto` | 目录名、进程名、产物基础名 |
+| `output` | `release/` | 产物与 `win-unpacked` 都在这 |
 | `buildResources` | `desktop/assets` | 图标等打包资源 |
 | `asar` | `false` | 见 11.8 |
-| `files` | `package.json`、`desktop/**`、`server/**` | web 构建产物已在 `server/public/`，一起打进去 |
-| `extraResources` | `browsers` → `resources/browsers`；`desktop/update.json` → `resources/update.json` | 内置浏览器与更新源配置 |
-| `win.target` | `nsis`，`x64` | 只出 Windows x64 安装包 |
+| `files` | `package.json`、`desktop/**/*`、`server/**/*` | web 构建产物已在 `server/public/`，一起打进去；排除 `*.map` 与 `*.md` |
+| `extraResources` | `browsers` → `resources/browsers`（filter `**/*`、`!_smoke-profile/**`）；`desktop/update.json` → `resources/update.json` | 内置浏览器与更新源配置 |
+| `win.target` | `portable` + `zip`，均 `x64` | 只出免安装产物，**不再产出 NSIS 安装包** |
+| `win.artifactName` | `ZhihuishuAuto-${version}-portable.${ext}` | 两种产物同名、靠扩展名区分 |
 | `win.requestedExecutionLevel` | `asInvoker` | 不主动要管理员 |
-| `nsis` | `oneClick:false`、`perMachine:false`、`allowElevation:false`、`allowToChangeInstallationDirectory:true` | 向导式 per-user 安装，可改目录，不弹 UAC |
-| 快捷方式 | 桌面 + 开始菜单，名字「智慧树自动听课」 | 卸载显示名也是这个 |
-| `deleteAppDataOnUninstall` | `false` | 卸载保留 `data/` |
-| `artifactName` | `ZhihuishuAuto-Setup-${version}.${ext}` | 文件名带版本号 |
-| `electronLanguages` | `zh-CN`、`en-US` | 只留两种语言，减小体积 |
+| `portable.requestExecutionLevel` | `user` | 免安装启动器按普通用户运行 |
+| `electronLanguages` | `zh-CN`、`en-US` | 只留中英文语言包 |
 
-构建命令：`npm run dist` = `npm run web:build` + `electron-builder --win nsis`；`npm run desktop:dir` 只出 `release/win-unpacked`，用来快速验证。
+两个容易踩的点：**不能写 `zip:` 配置块**——app-builder-lib 的 schema 根属性里没有它，写了直接校验失败；zip 的产物名会经 `artifactPatternConfig` 回落到 `win.artifactName`，所以两种产物自动同名不同后缀。另外 Windows 上 `zip` 不在 `winPackager` 的特判分支里（只特判 `nsis` / `portable`），走 `createCommonTarget` 的通用归档目标，是支持的。
+
+构建命令：`npm run dist` = `npm run web:build` + `electron-builder --win`，多目标来自配置里的 `win.target`（命令行 `--win nsis` 之类会覆盖它）。
 
 ### 11.10 已知限制
 
-- **未做代码签名**：Windows SmartScreen 会提示「未知发布者」，用户要点「更多信息 → 仍要运行」；企业策略可能直接拦截。
-- **包体大**：0.1.0 实测安装包 243 MB，装完 779 MB，其中内置 Chromium 约 446 MB。
-- **仅 Windows x64**：`win.target` 只配了 `nsis` + `x64`，macOS / Linux 没有产物。
+- **未做代码签名**：Windows SmartScreen 会提示「未知发布者」，用户要点「更多信息 → 仍要运行」；企业策略可能直接拦截。自签名/OV/EV 三种方案见 `docs/代码签名指南.md`。
+- **包体大**：内置 Chromium 约 446 MB；0.1.0 实测单文件 `portable.exe` 约 196 MB、`portable.zip` 约 349 MB、解压后约 780 MB。
+- **单文件版启动慢**：每次启动要先把自身（约 780 MB）自解压到 `%TEMP%\…`，慢的机器要十几秒到半分钟，期间没有窗口；目录版（zip）秒开。
+- **仅 Windows x64**：`win.target` 只配了 `portable` + `zip` + `x64`，macOS / Linux 没有产物。
 - **单实例**：第二个实例只唤起已有窗口，不会并行跑两份。
 - **内置 Chromium 版本跟随 Playwright**，与系统 Chrome 可能不同；平台行为以系统 Chrome 为主路径。
-- **开机自启只对安装版生效**，开发模式不写系统启动项。
-- **更新默认离线**：没配静态目录就永远不提示新版本；配了也要用户手动点「检查更新」。
+- **开机自启只对打包版生效**，开发模式不写系统启动项；单文件版登记的是启动器给的原始 exe（`PORTABLE_EXECUTABLE_FILE`），不是临时目录里的 `process.execPath`。
+- **没有自动更新**：免安装形态不生成 `latest.yml`，升级 = 下载新版解压覆盖（`data/` 别覆盖）。
 - **登录态在 `data/profile/`**：换机器或删掉 `data/` 需要重新扫码登录。
 
 ### 11.11 安装包：从「向导式」改成「一键式」（0.1.0 的真实装机故障）
@@ -640,11 +643,121 @@ body{overflow:hidden}
 
 ⇒ **安装流程以用户双击验证为准**；`win-unpacked` 与免安装 zip 形态已完整验证（窗口、托盘、IPC、扫码登录浮层、退出）。
 
+> 后续结论：NSIS 这条线整体放弃，交付改为纯免安装（`portable` + `zip`），见 11.13。
+
 ### 11.12 构建产物现状（0.1.0）
 
-`release/` 下：
-- `ZhihuishuAuto-Setup-0.1.0.exe`（约 243 MB，**一键安装**）
-- `ZhihuishuAuto-0.1.0-portable.zip`（约 349 MB，解压即用；`data/` 落在 exe 同级，目录不可写时回退到 `%APPDATA%\ZhihuishuAuto\data`）
-- `win-unpacked/`（约 765 MB）、`builder-debug.yml`、构建日志
+`npm run dist` 一次出两个产物（同一份 `win-unpacked` 载荷，所以体积大头只算一次）：
+- `ZhihuishuAuto-0.1.0-portable.exe`（约 196 MB，**单文件免安装版**：启动器把载荷自解压到 `%TEMP%\<ksuid>\app` 再运行，主进程退出后清理临时目录）
+- `ZhihuishuAuto-0.1.0-portable.zip`（约 349 MB，**目录版，推荐**：解压即用、启动快，`data/` 落在 exe 同级）
+- `win-unpacked/`（约 765 MB，两种产物的共同载荷）、`ZhihuishuAuto-0.1.0-portable/`（portable 目标的 staging 副本）、`builder-debug.yml`、构建日志
+- 早期的 `ZhihuishuAuto-Setup-0.1.0.exe` + `.blockmap` 是 NSIS 时代的遗留，已不再产出，可以直接删。
 
 `browsers/` 是 `chromium-1248` + `winldd-1007`（446 MB）。界面截图见 `docs/desktop-overview.png`、`docs/desktop-packaged.png`、`docs/ui-settings-desktop.png`（`docs/*.png` 不入库）。
+
+
+### 11.13 交付改为纯免安装（portable + zip），并修「打开数据目录 / 打开文件位置」
+
+**背景**：用户要求「只要 Portable 安装模式」，同时反馈「当前打开文件管理器的逻辑有问题」。
+
+**症状 1：单文件免安装版的数据会丢。** electron-builder 的 `portable` 目标是自解压启动器：它把载荷解到 `%TEMP%\<ksuid>\app`，用 `ExecWait` 跑里面的 ZhihuishuAuto.exe，进程退出后再 `RMDir /r $INSTDIR` 删掉整个临时目录。旧 `desktop/paths.mjs` 用 `path.dirname(process.execPath)` 当 exe 目录 → 数据目录落在临时目录里，退出即消失；「打开数据目录」打开的也是临时目录。启动器另外会设置环境变量 `PORTABLE_EXECUTABLE_DIR`（真正的 exe 所在目录）、`PORTABLE_EXECUTABLE_FILE`（真正的 exe 路径），旧代码完全没读。
+
+**症状 2：导出日志后「打开文件管理器」打开的是压缩包内容。** 旧 IPC `desktop:openPath` 对任何路径都调 `shell.openPath`，对文件等于「用默认程序打开」——导出的日志 zip 会被压缩软件接管，而不是在资源管理器里选中它。
+
+**改动**：
+
+1. 新增 `desktop/paths-plan.mjs`（纯函数、不 import electron / 不碰磁盘，便于单测）：`planRuntime()` 判运行形态并给出数据目录候选；`isTempDir()` / `samePath()` / `modeLabel()` 同文件。
+2. `desktop/paths.mjs` 改为调 `planRuntime`，并补 `os.tmpdir()/TEMP/TMP/TMPDIR`（临时目录根）与 `%LOCALAPPDATA%\Programs`、`Program Files(+x86)`（安装目录根）。逐候选 `ensureWritable`（mkdir + 写删 `.write-test`），全不可写才回退 `%APPDATA%\ZhihuishuAuto\data`。`resolvePaths()` 额外返回 `mode`、`isPortable`、`launchExe`、`dataCandidates`，供日志、自启、重启使用。
+3. IPC：`openDataDir` 先 `mkdir -p` 再打开，失败回 `{ok:false, message:'打不开数据目录：…'}`（`shell.openPath` 返回的是错误字符串，不是布尔）；`openPath` 校验必须在数据目录内、存在性，**目录用 `shell.openPath`、文件用 `shell.showItemInFolder`**（在资源管理器里选中）。`web/src/store.js` 两处都开始检查 `ok:false` 并提示。
+4. 开机自启与「重启程序」改用 `paths.launchExe`：单文件版注册/拉起的是原始 `PORTABLE_EXECUTABLE_FILE`，不是 `%TEMP%` 里的 `process.execPath`。单文件版重启走 `relaunchAfterExit()`（`cmd /c ping -n 5 … & start "" "<exe>"`，detached）——必须先让启动器退出、清理临时目录，再拉原始 exe；用 `app.relaunch` 会拉起 `%TEMP%` 里的 exe，启动器一退出就没了。
+5. `desktop/updater.mjs`：`portable` 目标的 `isWriteUpdateInfo` 为 `false`，不生成 `latest.yml`/`blockmap`，electron-updater 用不了 → `initUpdater(appLog, { isPortable })` 在免安装形态下直接 `disabled`，文案「免安装版不支持自动更新：下载新版后解压覆盖即可」。
+6. `electron-builder.yml`：删除整个 `nsis` 块，`win.target` 改为 `portable` + `zip`（都 x64），`artifactName` 统一为 `ZhihuishuAuto-<版本>-portable.<扩展名>`。**不能写 `zip:` 配置块**（schema 里没有该属性，会校验失败），zip 的文件名靠 `artifactPatternConfig` 回落到 `win.artifactName`。`package.json` 的 `dist` 改为 `electron-builder --win`（多目标来自配置）。
+7. 日志与导出信息：启动日志打印「运行形态 / 启动程序 / 数据目录」；`temp-exe` 形态额外 warn 提醒；`system.txt` 增加「打包版 / 运行形态 / 启动程序」三行。
+
+**运行形态与数据目录（`planRuntime` 的规则）**：
+
+| 形态 | 判定 | 数据目录候选（按顺序） |
+| --- | --- | --- |
+| `dev` | `!app.isPackaged` | `ZHS_DATA` → `<appRoot>/data` → `%APPDATA%\ZhihuishuAuto\data` |
+| `portable-file` | 有 `PORTABLE_EXECUTABLE_DIR/FILE` | `ZHS_DATA` → `<启动器所在目录>/data` → `%APPDATA%\ZhihuishuAuto\data` |
+| `temp-exe` | exe 在临时目录里且无 PORTABLE 变量 | `ZHS_DATA` → `%APPDATA%\ZhihuishuAuto\data`（**绝不写临时目录**） |
+| `portable-dir` | 其它已打包形态 | `ZHS_DATA` → `<exe 同级>/data` → `%APPDATA%\ZhihuishuAuto\data` |
+| `installed` | exe 在 `%LOCALAPPDATA%\Programs` 或 `Program Files` | `ZHS_DATA` → `<安装目录>/data` → `%APPDATA%\ZhihuishuAuto\data`（历史形态，仅兜底） |
+
+`isPortable` 为 `packaged && mode !== 'installed'`；`launchExe` 仅在 `portable-file` 下换成原始 exe。
+
+**测试**：新增 `test/paths-plan.test.mjs`（11 个用例：临时目录/安装目录判定、「D:/TempX」不算「D:/Temp」、五个形态的候选与 launchExe、`ZHS_DATA` 优先、候选去重、`modeLabel`）。`node test/paths-plan.test.mjs` 全绿。
+
+**本会话的验证边界**：这个沙箱禁止任何带管道的子进程（连 `spawnSync(node, ['-e', …])` 都 EPERM），所以 `vite build`（esbuild 要起 service 进程）和 `electron-builder` 在这里跑不了；单元测试是直接 `node <文件>` 在进程内跑的。**打包产物需要在正常终端执行 `npm run dist` 复核**（会先 `web:build`，再出 portable.exe + portable.zip），并确认：单文件版启动后 `data/` 在 exe 旁边、日志里「运行形态：免安装（单文件）」、设置页「打开」能打开它、导出日志会在资源管理器里选中 zip。
+
+**取舍**：单文件版每次启动要解压约 780 MB 到 `%TEMP%`，比目录版慢；目录版（zip）启动快、排错直观，所以 README 里把 zip 标为推荐。
+
+### 11.14 打包产物「双击没反应」复盘：文件完整性标签导致 Electron 原生崩溃
+
+**现象**（2026-10-23）：用 `npm run dist` 打出 portable.exe / win-unpacked 之后，在仓库 release 目录里双击 exe：没有窗口、托盘也没有图标，`data/` 和 main.log 都没生成；单文件 portable.exe 同样毫无反应。
+
+**排查过程**：
+
+1. 先排除代码问题：给 `win-unpacked\ZhihuishuAuto.exe` 加 `--no-sandbox` 启动 → 窗口、托盘、本地服务、`data/` 全部正常，日志完整（应用启动 v0.1.0（免安装（解压即用））、数据目录、[server] 子进程已启动）。说明业务代码没问题，崩在 Electron/Chromium 原生启动阶段。
+2. 标志位矩阵（electron.exe 45.0.0）：`--version` 退出码 3；`--disable-gpu --version` 3；`--headless --version` 3；`--no-sandbox --version` 0；`--single-process --no-sandbox --disable-gpu --version` 0 ⇒ 卡在 Chromium sandbox 初始化，与 GPU 无关。
+3. Windows 事件日志确有三次 Application Error：electron.exe 45.0.0，异常代码 `0xc0000005`，错误偏移 `0x0000000007ef833b`。
+4. 关键对照（同一个 electron.exe、同一个最小 Electron 应用）：放在 `%TEMP%` 或 `D:\Projects\MultiProject\`（工作区外）→ 退出码 0；放在仓库目录里 → 退出码 3（崩溃）；用 `%TEMP%` 的 electron.exe 去跑仓库里的 main.js → 能正常建窗口。⇒ 与二进制无关，只与「文件所在目录」有关。
+5. `icacls` 对比完整性级别：仓库里的 exe 全是 Low Mandatory Level（Low 完整性），复制到仓库外就恢复 Medium：
+   - `release\win-unpacked\ZhihuishuAuto.exe` → Low
+   - `node_modules\electron\dist\electron.exe` → Low
+   - `D:\ZhihuishuAuto`、`%TEMP%` 下的副本 → 无 Low 标签
+   仓库目录 ACL 里挂着 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`，子文件继承它。
+
+**原因**：这些文件是受限沙箱进程（DSH 的低完整性令牌）写出来的，新文件继承了 Low 完整性标签。Windows 允许 Low 进程运行 Win32 程序，但 Chromium 的 sandbox 初始化在 Low 完整性下直接崩（`0xc0000005`），而且崩在写日志之前，所以看不到任何输出；单文件 portable 启动器同理——Low 完整性进程无法把载荷解压到 Medium 的 `%TEMP%`，于是静默退出。
+
+**验证**：
+
+- robocopy `release\win-unpacked` → `D:\ZhihuishuAuto`（工作区外，文件变 Medium）：双击正常启动，data 在 exe 旁边，日志「应用启动 v0.1.0（免安装（解压即用））」、「[server] 子进程已启动 pid/port」齐全。
+- `release\ZhihuishuAuto-0.1.0-portable.exe` 复制到 `D:\PortableTest`：16 秒后窗口出现，日志「免安装（单文件）」，data 在 exe 旁。
+- win-unpacked 复制到 `%TEMP%` 运行：日志「临时目录运行」，data 落到 `%APPDATA%\ZhihuishuAuto\data` —— 11.13 的 temp-exe 分支实测生效。
+
+**修复/规避**：
+
+1. 别在受限工作目录里直接双击打包产物：复制或解压到普通目录（例如 `D:\ZhihuishuAuto`）再运行。zip 用资源管理器解压出来的文件是 Medium，不受影响。
+2. 要就地修复项目目录，用管理员 PowerShell 重打完整性级别：`icacls "D:\Projects\MultiProject\zhihuishu-auto" /setintegritylevel (OI)(CI)Medium /T /C`（必要时先 `takeown /f "D:\Projects\MultiProject\zhihuishu-auto" /r /d y`）。命令只改标签不动内容；受限会话自己执行会 Access is denied。
+3. 以后打包完成后，先确认产物不是 Low 标签再双击（`icacls` 的输出里不应出现 Low Mandatory Level 行）。
+
+**顺带记录的小问题**：首次用 `--no-sandbox` 启动时出现过一次「本地服务启动失败：Error: (-3) loading 'data:text/html;...'」（splash 的 data URL 被随后的导航 abort，ERR_ABORTED 竞态），第二次启动正常；本次未改代码，留作后续加固点（可在 did-fail-load 里忽略 -3）。
+
+**签名**：如何去掉「未知发布者」提示见 `docs/代码签名指南.md`。
+
+### 11.15 自动切节反复失败时转人工（不再无限重试）
+
+**现象**（2026-10-23 用户日志）：本节 1.1 播完 → 自动切 4.2 → 真实鼠标点了 3 次都没反应 → 打「点了 4.2 但视频始终没变」→ 十几秒后又从头来一轮。日志每 27 秒刷一屏，视频始终停在 1.1，自动化陷入死循环（课程树那一下点击被平台忽略，多半是被弹题浮层/新标签页挡住，或那一节需要手动点开）。
+
+**改法**：加一条升级链，失败到阈值就停止硬试、把控制权交回人。
+
+1. 新增 `server/worker/lib/manual-fix.mjs`（纯函数，便于单测）：`SWITCH_FAIL_LIMIT = 2`、`advanceFailStep(fails, limit)` 返回 `{ fails, escalate }`、`manualFixHint(code, reason)` 生成给用户看的一句话。
+2. `maybeAdvanceLesson()` 尾部：成功才把 `switchFails` 清零；失败累加，未到阈值只打「下一轮再试」并 patch 一条短暂 notice，到阈值调 `enterManualFix()`。转人工期间 `manualPaused` 守卫让 `maybeAdvanceLesson()` 直接返回，主循环不再尝试切节。
+3. `enterManualFix(code, reason)`：置 `manualPaused = true`、`userPaused = true`（借主循环的「用户暂停」分支彻底停掉自动切节/自动播放），`pauseVideoQuiet()` 暂停视频，patch `{ phase:'PAUSED', manualHint, notice }`，然后 `showBrowserWindow(tip)` **把隐藏的后台浏览器窗口叫到前台**；叫不出来（win-window.ps1 失败）时在提示里追加「请点『重启』后再试一次」。
+4. `runEffect` 的 `advance` 分支：`if (!ok && e.onFalse && !manualPaused) patch(e.onFalse)` —— 否则 tick 的兜底补丁会把 phase 改成 `ENDED`（这是「本节播完、没找到下一节」的语义），界面就不再显示「继续」按钮，人也没法恢复。
+5. 状态字段：`server/state.mjs` 的 `initialState()` 增加 `manualHint: ''`。`notice` 只活 7 秒、且会被后续补丁覆盖，转人工需要一个**常驻**字段；「继续」后由各指令清理。
+6. 前端：`web/src/store.js` 的 `hint` computed 在 `WAIT_VERIFY` 之后加 `if (s.manualHint) return { kind:'act', icon:'!', text:s.manualHint, sticky:true }`；`hintShow` 对 `sticky` 提示不理会「已关闭」状态；`App.vue` 的提示条对 sticky 提示不渲染关闭按钮（这条提示不该被 × 掉）。转人工时 `phase === 'PAUSED'`，主控件自然显示「继续」。
+7. 恢复路径：`resume` 指令清 `manualPaused/switchFails`、清 `manualHint` 并把 phase 改回 `PLAYING`，若之前是转人工状态还会 `endedLogged = false` + 重读一次课程信息（人工可能已经换了节），失败的话还能再走一轮升级；`start`/`restart`/`lesson` 指令也各自清理这套状态（`lesson` 成功若之前处于转人工，会顺便把 `userPaused` 复位）。
+
+**顺手改的可观测性**：`clickLesson()` 最终失败日志带上当前页面 URL（`点了 4.2 但视频始终没变（当前页面：…）`），下次再遇到能一眼看出是不是被跳到了课程目录页/新标签页。
+
+**测试**：新增 `test/manual-fix.test.mjs`（8 个用例：默认阈值、首次不升级、第二次升级、超阈值仍升级、自定义阈值、非法输入/非法阈值、提示文案含小节号与「继续」、无小节号时用「切下一节」）。`node test/manual-fix.test.mjs` 8/8 通过；`prettier --check` 通过。
+
+**取舍**：阈值取 2 轮（每轮内部已经重试 3 次真实鼠标点击，合计 6 次），够容忍一次偶发的点击丢失，又不至于让用户等太久；转人工后自动化完全停手，避免脚本和用户抢着操作同一个页面。
+
+### 11.16 界面加「显示浏览器 / 隐藏浏览器」按钮
+
+**现象**（2026-10-23 用户要求）：程序默认把后台 Chrome 窗口用 \`WS_EX_TOOLWINDOW\` + \`SetWindowPos(-32000,-32000)\` 移到屏幕外、去掉任务栏按钮（见 11.5），但界面里没有任何开关。一旦需要人工介入（扫码登录、点断掉的课、过滑块），用户只能等程序自己把窗口叫出来，看完也没法手动藏回去。同时发现一个真 bug：登录浮层的「在浏览器窗口中登录」按钮点了没反应——\`web/src/store.js\` 早就调 \`control('showBrowser')\`，\`server/lib/actions.mjs\` 的白名单也有这个动作，但 \`server/real-engine.mjs\` 的 \`control()\` 只转发了 pause/resume/restart/quit/settings/lesson/probe/verifyprobe/courses/course/quiz，**漏了 showBrowser / hideBrowser / refreshQr**，指令到引擎就断了。
+
+**改法**：
+
+1. \`server/real-engine.mjs\`：在 \`if (action === 'settings')\` 之前补三行转发（\`showBrowser\` / \`hideBrowser\` / \`refreshQr\` → 同名 worker 指令）。
+2. 新增状态字段 \`browserVisible\`（\`server/state.mjs\` 的 \`initialState()\`，默认 \`false\`）：后台 Chrome 窗口当前是否露在屏幕里。\`server/worker/main.mjs\` 里 \`showBrowserWindow()\` 成功后 patch \`{browserVisible: ok, notice}\`、\`hideBrowserWindow()\` 成功后 patch \`{browserVisible:false}\`、\`doQuit()\` 也置 \`false\`（退出时窗口会关）。\`server/lib/actions.mjs\` 的 quit 乐观补丁同步加 \`browserVisible:false\`。
+3. 前端：\`web/src/store.js\` 加 \`browserVisible\` computed 与 \`toggleBrowser()\`（按当前值发 \`hideBrowser\` / \`showBrowser\`）；\`web/src/App.vue\` 顶栏在「开始听课」态的按钮组里加一个切换按钮，文案随状态在「显示浏览器 / 隐藏浏览器」之间变，\`title\` 说明用途（叫到前台手动登录/点课程；藏回屏幕外）。
+4. 故意**不做乐观补丁**：\`showBrowser\`/\`hideBrowser\` 在 \`server/lib/actions.mjs\` 的 \`actionPatch()\` 里是空的。搬窗口要走 PowerShell（\`win-window.ps1\`）且可能失败，让 worker 真正搬完再回写，界面不会先谎报「已显示」。
+5. mock 引擎（\`server/mock-engine.mjs\`）也补了这两个动作，联调界面时按钮同样有效。
+
+**测试**：\`test/actions.test.mjs\` 里 quit 的期望补丁加 \`browserVisible:false\`，并新增一条「浏览器窗口显示/隐藏：跑起来才能点，且不产生乐观补丁」。全仓 \`npm test\` 149 pass / 0 fail；\`npm run web:build\` 重建出 \`server/public/assets/index-h6CUy_ZP.js\`。
+
+**取舍**：按钮只放在「听课进行中」的按钮组里（IDLE 时窗口还没起来，没有可显示的东西）；窗口真实位置才是唯一真相，所以宁可多一次 SSE 更新，也不做前端假乐观。
