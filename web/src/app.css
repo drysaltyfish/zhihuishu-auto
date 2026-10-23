@@ -32,6 +32,11 @@
   gap: 12px;
   padding-right: 4px;
 }
+/* 这些页面里的卡片保持自身高度，内容多了让 .page 自己滚；
+   否则 flex 会把卡片压扁、再被 .card 的 overflow:hidden 裁掉（设置页/课程页曾出现卡片被切半截）。 */
+.page > * {
+  flex: 0 0 auto;
+}
 .page-overview {
   flex: 1;
   min-height: 0;

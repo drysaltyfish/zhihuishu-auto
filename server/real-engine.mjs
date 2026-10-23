@@ -207,6 +207,10 @@ export function createRealEngine({ state, emit, pushLog, dataDir }) {
         }, 6000);
         return true;
       }
+      // 浏览器窗口：显示 / 隐藏 / 刷新二维码（worker 里用 win-window.ps1 把窗口搬到屏幕外）
+      if (action === 'showBrowser') return send('showBrowser');
+      if (action === 'hideBrowser') return send('hideBrowser');
+      if (action === 'refreshQr') return send('refreshQr');
       if (action === 'settings') return send('settings', data);
       if (action === 'lesson') return send('lesson', data);
       if (action === 'probe') return send('probe', data);

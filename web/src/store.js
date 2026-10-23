@@ -83,6 +83,8 @@ export const coursePct = computed(() => {
   const sm = S.value && S.value.summary;
   return sm && sm.course ? sm.course.pct : null;
 });
+/** 后台 Chrome 窗口是不是露在外面（隐藏时被搬到屏幕外、任务栏也不显示） */
+export const browserVisible = computed(() => !!(S.value && S.value.browserVisible));
 
 /* notice 出现 7 秒后自动从提示条撤掉（与旧版行为一致） */
 watch(
@@ -105,6 +107,8 @@ export const hint = computed(() => {
   if (s.phase === 'WAIT_VERIFY') {
     return { kind: 'act', icon: '!', text: s.verifyHint || '需要人机验证：请到浏览器窗口里点一下' };
   }
+  /* 自动切节反复失败、已转人工：常驻提示（notice 会 7 秒后消失，这条不会），直到点「继续」 */
+  if (s.manualHint) return { kind: 'act', icon: '!', text: s.manualHint, sticky: true };
   /* 登录阶段由全屏登录浮层负责（二维码 + 说明），这里不再重复一条提示条 */
   if (s.loginNeeded) return null;
   if (s.notice && !noticeMuted.value) {
@@ -117,7 +121,9 @@ export const hint = computed(() => {
 
 export const hintShow = computed(() => {
   const h = hint.value;
-  return h && h.text !== hintDismissed.value ? h : null;
+  if (!h) return null;
+  if (h.sticky) return h; // 转人工提示常驻，不允许关掉
+  return h.text !== hintDismissed.value ? h : null;
 });
 
 /* 提示文案变了就重新显示 */
@@ -176,6 +182,11 @@ export function control(name) {
   return run(name, async () => {
     await api('/api/control', { action: name });
   });
+}
+
+/** 显示 / 隐藏后台浏览器窗口：实际状态由 worker 搬完窗口后回写 browserVisible */
+export function toggleBrowser() {
+  return control(browserVisible.value ? 'hideBrowser' : 'showBrowser');
 }
 
 function applySettings(patch) {
@@ -277,7 +288,11 @@ export function openDataDir() {
     say('浏览器版没有数据目录，请用桌面版打开', 'warn');
     return;
   }
-  Promise.resolve(desktop.openDataDir()).catch(() => say('打开数据目录没成功', 'bad'));
+  Promise.resolve(desktop.openDataDir())
+    .then((r) => {
+      if (r && r.ok === false) say((r && r.message) || '打开数据目录没成功', 'bad');
+    })
+    .catch(() => say('打开数据目录没成功', 'bad'));
 }
 
 export async function exportLogs() {
@@ -290,9 +305,11 @@ export async function exportLogs() {
     if (!r || r.ok === false) throw new Error((r && r.message) || '导出日志没成功');
     const p = r.path || '';
     say(p ? '已导出日志：' + p : '已导出日志');
+    // 让资源管理器选中这个 zip（openPath 对文件会定位而不是用压缩软件打开）
     if (p && typeof desktop.openPath === 'function') {
       try {
-        await desktop.openPath(p);
+        const rr = await desktop.openPath(p);
+        if (rr && rr.ok === false) say(rr.message || '导出成功，但没能打开文件所在的位置', 'warn');
       } catch (e) {
         /* 打开失败不影响导出结果 */
       }

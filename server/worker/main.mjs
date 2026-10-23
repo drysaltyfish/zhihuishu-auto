@@ -17,6 +17,7 @@ import { chooseFallback, judge, labelOf, historyEntry } from './lib/answer-strat
 import { DIALOG_BOX_CSS, PLAY_BUTTON_CSS } from './lib/page-scripts.mjs';
 import { createProbe } from './lib/probe.mjs';
 import { decide } from './lib/tick.mjs';
+import { advanceFailStep, manualFixHint } from './lib/manual-fix.mjs';
 import { saveCookies, loadCookies } from './lib/session-store.mjs';
 import { createQuizRunner } from './lib/quiz-runner.mjs';
 import { groupChapters, pickChapterToQuiz, quizListOf, platformDoneMap } from './lib/quiz-logic.mjs';
@@ -45,6 +46,8 @@ let ctx = null;
 let page = null;
 let started = false;
 let userPaused = false;
+let switchFails = 0; // 自动切节连续失败轮数（转人工的判据）
+let manualPaused = false; // 转人工中：自动化暂停、浏览器窗口已打开，等人手动点一节
 let stopped = false;
 let questionPoints = [];
 let autoAnswer = true;
@@ -277,7 +280,7 @@ function launchOptions(sandbox = true) {
     args: CHROME_ARGS,
     ignoreDefaultArgs: ['--enable-automation', '--no-startup-window'],
   };
-  // 优先用系统 Chrome；机器上没有就回落到安装包自带的 Chromium（PLAYWRIGHT_BROWSERS_PATH 指向 resources/browsers）
+  // 优先用系统 Chrome；机器上没有就回落到程序自带的 Chromium（PLAYWRIGHT_BROWSERS_PATH 指向 resources/browsers）
   const sys = CHROME_CANDIDATES.find((x) => {
     try {
       return fs.existsSync(x);
@@ -355,11 +358,14 @@ async function hideBrowserWindow(why) {
   if (process.platform !== 'win32') return false;
   browserHidden = true;
   const ok = await winHelper('hide');
-  if (ok) log('debug', '浏览器窗口已隐藏（任务栏也不显示）' + (why ? '：' + why : ''));
+  if (ok) {
+    log('debug', '浏览器窗口已隐藏（任务栏也不显示）' + (why ? '：' + why : ''));
+    patch({ browserVisible: false });
+  }
   return ok;
 }
 
-async function showBrowserWindow() {
+async function showBrowserWindow(tip) {
   if (process.platform !== 'win32') {
     patch({ notice: '只有 Windows 上才能单独把浏览器窗口叫出来' });
     return false;
@@ -374,8 +380,9 @@ async function showBrowserWindow() {
   if (ok) log('info', '浏览器窗口已打开，可以在里面手动登录或操作');
   else log('warn', '没找到浏览器窗口（可能已经关掉了）');
   patch({
+    browserVisible: ok,
     notice: ok
-      ? '浏览器窗口已打开：在里面登录或点好课程后，回到这里点「继续」'
+      ? tip || '浏览器窗口已打开：在里面登录或点好课程后，回到这里点「继续」'
       : '没找到浏览器窗口，点「重启」再试一次',
   });
   return ok;
@@ -810,7 +817,8 @@ async function clickLesson(code) {
         .catch(() => 0);
       if (!box2) break;
     }
-    log('warn', '点了 ' + code + ' 但视频始终没变');
+    const nowUrl = page && !page.isClosed() ? page.url() : '';
+    log('warn', '点了 ' + code + ' 但视频始终没变' + (nowUrl ? '（当前页面：' + nowUrl.slice(0, 120) + '）' : ''));
     await shot('clickfail-' + Date.now() + '.png');
   } catch (e) {
     log('warn', '点课程树失败：' + String((e && e.message) || e).slice(0, 120));
@@ -899,6 +907,7 @@ async function maybeAdvanceLesson(force) {
   if (switchingCourse) return false;
   if (!page || page.isClosed()) return false;
   if (!autoAdvance) return false;
+  if (manualPaused) return false; // 已经转人工：等用户手动点好再继续
   if (!force && Date.now() - lastLessonCheck < 15000) return false;
   lastLessonCheck = Date.now();
   const cur = lessons.find((l) => l.current);
@@ -928,11 +937,37 @@ async function maybeAdvanceLesson(force) {
   patch({ notice: '本节已看完，正在切到 ' + nxt.code + ' ' + nxt.name });
   const ok = await clickLesson(nxt.code);
   if (ok) {
+    switchFails = 0;
     await applyPlaying();
     patch({ notice: '' });
     lastLessonCheck = Date.now();
+    return true;
   }
-  return ok;
+  // 点了没反应：连续失败到阈值就退位让贤，把浏览器窗口叫出来让人手动点
+  const step = advanceFailStep(switchFails);
+  switchFails = step.fails;
+  if (step.escalate) {
+    await enterManualFix(nxt.code, '连续 ' + switchFails + ' 轮点了没反应');
+  } else {
+    log('warn', '切到 ' + nxt.code + ' 没成功，下一轮再试（连续 ' + switchFails + ' 轮失败就转人工）');
+    patch({ notice: '切到 ' + nxt.code + ' 没成功，再试一次' });
+  }
+  return false;
+}
+
+/** 自动切节反复失败：别再硬试，暂停自动化并把浏览器窗口叫出来，让人手动点好一节再点「继续」 */
+async function enterManualFix(code, reason) {
+  if (manualPaused) return;
+  manualPaused = true;
+  userPaused = true; // 让主循环按「用户暂停」处理：不自动切节、也不自动恢复播放
+  try {
+    await pauseVideoQuiet();
+  } catch {}
+  const tip = manualFixHint(code, reason);
+  log('warn', '自动切节转人工：' + reason);
+  patch({ phase: 'PAUSED', manualHint: tip, notice: tip });
+  const shown = await showBrowserWindow(tip);
+  if (!shown) patch({ manualHint: tip + '（没找到浏览器窗口，请点「重启」后再试一次）' });
 }
 
 /* ================= 播放 ================= */
@@ -1204,7 +1239,8 @@ async function runEffect(e, st) {
     }
     if (e.type === 'advance') {
       const ok = await maybeAdvanceLesson(!!e.force);
-      if (!ok && e.onFalse) patch(e.onFalse);
+      // 已转人工时别再打「本节播完、没找到下一节」的兜底补丁，否则界面会从暂停跳成 ENDED，「继续」按钮就没了
+      if (!ok && e.onFalse && !manualPaused) patch(e.onFalse);
       return;
     }
     if (e.type === 'recoverPage') {
@@ -1879,7 +1915,7 @@ async function doQuit() {
   ctx = null;
   page = null;
   started = false;
-  patch({ phase: 'STOPPED', video: { paused: true } });
+  patch({ phase: 'STOPPED', video: { paused: true }, browserVisible: false });
   log('info', '已退出，断点已保存');
 }
 
@@ -1890,6 +1926,8 @@ process.on('message', async (m) => {
       if (started) return;
       stopped = false;
       userPaused = false;
+      manualPaused = false;
+      switchFails = 0;
       await doStart();
     } else if (m.cmd === 'pause') {
       userPaused = true;
@@ -1900,14 +1938,26 @@ process.on('message', async (m) => {
       log('info', '已暂停');
     } else if (m.cmd === 'resume') {
       userPaused = false;
-      patch({ phase: 'PLAYING' });
+      // 用户手动点好节后点「继续」：清掉转人工状态，自动化从当前节接着跑
+      const wasManual = manualPaused;
+      manualPaused = false;
+      switchFails = 0;
+      patch({ phase: 'PLAYING', manualHint: '', notice: '' });
+      if (wasManual) {
+        endedLogged = false; // 允许再试一轮自动切节；再失败还会重新转人工
+        try {
+          await readCourseInfo(); // 人工可能换了节，重新对一遍当前是哪一节
+        } catch {}
+      }
       await applyPlaying();
-      log('info', '已继续');
+      log('info', wasManual ? '已继续（人工修复后）' : '已继续');
     } else if (m.cmd === 'restart') {
       log('info', '正在重启…');
       await doQuit();
       stopped = false;
       userPaused = false;
+      manualPaused = false;
+      switchFails = 0;
       started = false;
       questionPoints = [];
       lastVideoKey = '';
@@ -1917,7 +1967,7 @@ process.on('message', async (m) => {
       verifySince = 0;
       qrAt = 0;
       clearLoginUi();
-      patch({ verifyHint: '', pointsLoaded: false });
+      patch({ verifyHint: '', pointsLoaded: false, manualHint: '' });
       await doStart();
     } else if (m.cmd === 'quit') {
       await doQuit();
@@ -1933,8 +1983,12 @@ process.on('message', async (m) => {
           ok = await clickLesson(code);
         }
         if (ok) {
+          const wasManual = manualPaused;
+          manualPaused = false;
+          switchFails = 0;
+          if (wasManual) userPaused = false; // 人工修复完（手动选了节）就恢复自动化
           await applyPlaying();
-          patch({ notice: '已切到 ' + code });
+          patch({ manualHint: '', notice: '已切到 ' + code });
         } else {
           log('warn', '切换小节 ' + code + ' 没成功');
           patch({ notice: '切到 ' + code + ' 没成功，可能被弹题或页面挡住了，再点一次试试' });

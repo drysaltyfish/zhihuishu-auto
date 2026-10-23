@@ -21,6 +21,8 @@ import {
   isStopped,
   canStart,
   courses,
+  browserVisible,
+  toggleBrowser,
   init,
   destroy,
   start,
@@ -95,6 +97,14 @@ onBeforeUnmount(destroy);
           </button>
         </template>
         <template v-else>
+          <button
+            class="btn"
+            :disabled="!!busy"
+            :title="browserVisible ? '把后台 Chrome 窗口藏回屏幕外' : '把隐藏的 Chrome 窗口叫到前台，手动登录或点课程'"
+            @click="toggleBrowser"
+          >
+            {{ browserVisible ? '隐藏浏览器' : '显示浏览器' }}
+          </button>
           <button v-if="!isPaused" class="btn warn" :disabled="!!busy" @click="control('pause')">暂停</button>
           <button v-else class="btn ok" :disabled="!!busy" @click="control('resume')">继续</button>
           <button class="btn" :disabled="!!busy" @click="control('restart')">重启</button>
@@ -128,7 +138,7 @@ onBeforeUnmount(destroy);
         <div class="hintbar" :class="hintShow.kind">
           <span class="hi">{{ hintShow.icon }}</span>
           <span class="htext">{{ hintShow.text }}</span>
-          <button class="hint-x" title="关闭提示" @click="dismissHint">×</button>
+          <button v-if="!hintShow.sticky" class="hint-x" title="关闭提示" @click="dismissHint">×</button>
         </div>
       </div>
     </transition>

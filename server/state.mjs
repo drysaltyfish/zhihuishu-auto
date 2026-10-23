@@ -4,10 +4,12 @@ export function initialState() {
     mode: 'real',
     phase: 'IDLE',
     paused: false,
+    browserVisible: false, // 后台 Chrome 窗口当前是否露在外面（隐藏时被搬到屏幕外）
     loginNeeded: false,
     loginHint: '',
     pickHint: '',
     notice: '',
+    manualHint: '', // 自动切节反复失败转人工时的常驻提示（notice 会 7 秒消失，这个不会）
     course: { platform: '智慧树 · 学分课', name: '未选择课程', chapter: '—', taskPoint: '—', index: 1, total: 1 },
     video: { ct: 0, dur: 0, rate: 1, paused: true },
     progress: { watchedSec: 0, taskPointPct: null },

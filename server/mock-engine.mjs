@@ -349,6 +349,19 @@ export function createMockEngine(state, emit, pushLog) {
         pushLog('ok', 'mock：已切到课程「' + c.name + '」');
         return true;
       }
+      if (action === 'showBrowser' || action === 'hideBrowser') {
+        const on = action === 'showBrowser';
+        applyPatch(state, {
+          browserVisible: on,
+          notice: on ? 'mock：浏览器窗口已打开' : 'mock：浏览器窗口已隐藏',
+        });
+        pushLog('info', 'mock：' + (on ? '显示' : '隐藏') + '浏览器窗口');
+        return true;
+      }
+      if (action === 'refreshQr') {
+        pushLog('info', 'mock：刷新登录二维码');
+        return true;
+      }
       if (action === 'verify') {
         applyPatch(state, {
           phase: 'WAIT_VERIFY',

@@ -7,11 +7,16 @@ const CONTROL = {
   pause: { guard: 'running', patch: () => ({ paused: true, phase: 'PAUSED' }) },
   resume: { guard: 'running', patch: () => ({ paused: false }) },
   restart: { guard: 'startable', patch: () => ({ notice: '', phase: 'LAUNCHING', paused: false }) },
-  quit: { guard: 'running', patch: () => ({ paused: true, phase: 'STOPPED', video: { paused: true } }) },
+  quit: {
+    guard: 'running',
+    patch: () => ({ paused: true, phase: 'STOPPED', video: { paused: true }, browserVisible: false }),
+  },
   // 手动做某一章的平时测试（key 为空由 worker 自己挑；key='__retry' 清掉失败状态）
   quiz: { guard: 'running' },
   // 登录二维码：刷新 / 把隐藏的浏览器窗口叫出来手动登录（账号、学号、QQ 等）
   refreshQr: { guard: 'running' },
+  // 浏览器窗口显示 / 隐藏：状态由 worker 用 win-window.ps1 真正搬完窗口后回写 browserVisible，
+  // 这里不做乐观补丁，免得窗口其实没搬成、界面却先报了「已隐藏」。
   showBrowser: { guard: 'running' },
   hideBrowser: { guard: 'running' },
   // 下面的动作界面上不出现：mock 自检和 debug 摸页面结构用

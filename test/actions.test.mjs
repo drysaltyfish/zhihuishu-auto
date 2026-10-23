@@ -51,6 +51,14 @@ test('章节测试：跑起来才能做，空闲时给友好拒绝', () => {
   assert.match(r.hint, /开始听课/);
 });
 
+test('浏览器窗口显示/隐藏：跑起来才能点，且不产生乐观补丁（真实状态由 worker 回写）', () => {
+  for (const name of ['showBrowser', 'hideBrowser']) {
+    assert.equal(resolveControl(name, { phase: 'PLAYING', mock: false, debug: false }).ok, true);
+    assert.equal(resolveControl(name, { phase: 'IDLE', mock: false, debug: false }).status, 409);
+    assert.equal(actionPatch(name), null);
+  }
+});
+
 test('isStoppedPhase 只认 IDLE/STOPPED', () => {
   assert.equal(isStoppedPhase('IDLE'), true);
   assert.equal(isStoppedPhase('STOPPED'), true);
@@ -62,7 +70,12 @@ test('isStoppedPhase 只认 IDLE/STOPPED', () => {
 test('actionPatch 给出乐观补丁，无关动作没有补丁', () => {
   assert.deepEqual(actionPatch('pause'), { paused: true, phase: 'PAUSED' });
   assert.deepEqual(actionPatch('resume'), { paused: false });
-  assert.deepEqual(actionPatch('quit'), { paused: true, phase: 'STOPPED', video: { paused: true } });
+  assert.deepEqual(actionPatch('quit'), {
+    paused: true,
+    phase: 'STOPPED',
+    video: { paused: true },
+    browserVisible: false,
+  });
   assert.equal(actionPatch('verify'), null);
   assert.equal(actionPatch('nope'), null);
 });
