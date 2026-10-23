@@ -33,7 +33,7 @@ export async function startServer({ paths, log, appVersion }) {
     }
   } catch {}
   // TEMP/TMP 必须真的可写：某些被限制的环境里系统 Temp 会 EPERM（Playwright 建临时目录会失败），
-  // 这时退回到安装目录里的 data/tmp。
+  // 这时退回到程序数据目录里的 data/tmp。
   try {
     const candidates = [env.TEMP, env.TMP].filter((c) => c && /^[a-zA-Z]:[\\/]/.test(c));
     candidates.push(path.join(paths.dataDir, 'tmp'));

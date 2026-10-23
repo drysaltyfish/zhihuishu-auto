@@ -1,13 +1,15 @@
 /**
  * Electron 主进程：托盘 + 应用窗口 + 本地服务子进程 + 日志/更新/IPC。
  * 原则：任何异常都不弹原始堆栈，写日志 + 给用户一句能看懂的话；
- * 子进程用 ELECTRON_RUN_AS_NODE 跑，安装版用户不需要自己装 Node。
+ * 子进程用 ELECTRON_RUN_AS_NODE 跑，用户不需要自己装 Node。
  */
 import { app, BrowserWindow, ipcMain, Menu, shell } from './electron-api.mjs';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolvePaths } from './paths.mjs';
+import { modeLabel } from './paths-plan.mjs';
+import { spawn } from 'node:child_process';
 import { initLogging, exportLogs } from './logging.mjs';
 import { startServer, stopServer } from './server-process.mjs';
 import { initUpdater, checkForUpdates, installUpdate } from './updater.mjs';
@@ -47,8 +49,18 @@ function bootstrap() {
     app.setPath('userData', paths.electronDataDir);
     app.setAppUserModelId('com.zhihuishu.auto');
     log = initLogging(paths.logDir);
-    log.info('应用启动 v' + app.getVersion() + '（' + (app.isPackaged ? '安装版' : '开发版') + '）');
+    log.info('应用启动 v' + app.getVersion() + '（' + modeLabel(paths.mode) + '）');
+    log.info('启动程序：' + paths.launchExe);
     log.info('数据目录：' + paths.dataDir);
+    if (paths.mode === 'temp-exe') {
+      log.warn(
+        '程序是从临时目录运行的（' +
+          paths.exeDir +
+          '），退出后会被清理，所以数据放到了 ' +
+          paths.dataDir +
+          '；建议解压到固定目录再运行'
+      );
+    }
   } catch (e) {
     console.error('初始化失败', e);
   }
@@ -83,7 +95,7 @@ function safeLog(level, msg) {
 
 function friendly(e) {
   const s = String((e && e.message) || e || '未知错误');
-  if (/ENOENT|no such file/i.test(s)) return '缺少必要的文件，可能是安装不完整，建议重新安装';
+  if (/ENOENT|no such file/i.test(s)) return '缺少必要的文件，可能是程序不完整，建议重新解压一份';
   if (/EACCES|EPERM|denied/i.test(s)) return '没有权限访问程序目录，请把程序装在你有写权限的位置';
   if (/timeout|超时/i.test(s)) return '启动太慢了，请重试一次';
   return '启动时遇到一点问题，已经记录到日志';
@@ -232,7 +244,7 @@ async function loadApp() {
 }
 
 async function onReady() {
-  initUpdater(log);
+  initUpdater(log, { isPortable: paths.isPortable, mode: paths.mode });
   createWindow();
   setupTray();
   try {
@@ -260,9 +272,14 @@ function setupTray() {
 }
 
 /* ---------------- 开机自启 / 退出 ---------------- */
+/** 开机自启要注册的 exe：单文件免安装版不能用 %TEMP% 里的 process.execPath（重启后就没了） */
+function autoStartPath() {
+  return (paths && paths.launchExe) || process.execPath;
+}
+
 function isAutoStart() {
   try {
-    if (app.isPackaged) return !!app.getLoginItemSettings({ path: process.execPath }).openAtLogin;
+    if (app.isPackaged) return !!app.getLoginItemSettings({ path: autoStartPath() }).openAtLogin;
   } catch {}
   return false;
 }
@@ -270,9 +287,10 @@ function isAutoStart() {
 function applyAutoStart(enabled) {
   const want = !!enabled;
   if (!app.isPackaged) return { ok: true, enabled: want, note: '开发模式不写开机自启' };
+  const exe = autoStartPath();
   try {
-    app.setLoginItemSettings({ openAtLogin: want, path: process.execPath, args: ['--hidden'] });
-    const now = !!app.getLoginItemSettings({ path: process.execPath }).openAtLogin;
+    app.setLoginItemSettings({ openAtLogin: want, path: exe, args: ['--hidden'] });
+    const now = !!app.getLoginItemSettings({ path: exe }).openAtLogin;
     safeLog('info', '开机自启：' + (now ? '已开启' : '已关闭'));
     return { ok: true, enabled: now };
   } catch (e) {
@@ -290,14 +308,36 @@ function quitApp() {
   }
 }
 
+/** 单文件免安装版：启动器要等本进程退出后才清理 %TEMP%，所以延迟几秒再拉起原始 exe */
+function relaunchAfterExit(exe) {
+  try {
+    const cmd = 'ping -n 5 127.0.0.1 >nul & start "" "' + exe + '"';
+    const cp = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', cmd], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    });
+    cp.unref();
+  } catch (e) {
+    safeLog('error', '延迟重启失败：' + ((e && e.message) || e));
+  }
+}
+
 function restartApp() {
   try {
     stopLocalServer();
   } catch {}
   quitting = true;
-  try {
-    app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--hidden') });
-  } catch {}
+  const exe = (paths && paths.launchExe) || process.execPath;
+  const args = process.argv.slice(1).filter((a) => a !== '--hidden');
+  if (paths && paths.mode === 'portable-file') {
+    relaunchAfterExit(exe);
+  } else {
+    try {
+      app.relaunch({ execPath: exe, args });
+    } catch {}
+  }
   setTimeout(() => {
     try {
       app.exit(0);
@@ -332,20 +372,54 @@ function underData(p) {
   }
 }
 
+function shortReason(s) {
+  const t = String(s || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return t.length > 80 ? t.slice(0, 80) + '…' : t;
+}
+
 ipcMain.handle(
   'desktop:openDataDir',
   guard(async () => {
-    const r = await shell.openPath(paths.dataDir);
-    return r ? bad('打不开数据目录') : ok();
+    try {
+      fs.mkdirSync(paths.dataDir, { recursive: true });
+    } catch (e) {
+      safeLog('error', '创建数据目录失败：' + ((e && e.message) || e));
+    }
+    const err = await shell.openPath(paths.dataDir);
+    if (err) {
+      safeLog('warn', '打开数据目录失败：' + err);
+      return bad('打不开数据目录：' + shortReason(err));
+    }
+    safeLog('info', '打开数据目录：' + paths.dataDir);
+    return ok({ path: paths.dataDir });
   })
 );
 
+// 打开「数据目录里的某个位置」：目录 → 资源管理器打开；文件 → 在资源管理器里选中它。
+// 之前一律 shell.openPath，导出日志后会被压缩软件接管，看着不像「打开文件管理器」。
 ipcMain.handle(
   'desktop:openPath',
   guard(async (_e, p) => {
-    if (!underData(p)) return bad('只能打开本程序数据目录里的文件');
-    const r = await shell.openPath(path.resolve(String(p)));
-    return r ? bad('打不开这个位置') : ok();
+    const abs = path.resolve(String(p || ''));
+    if (!underData(abs)) return bad('只能打开本程序数据目录里的位置');
+    if (!fs.existsSync(abs)) return bad('这个位置已经不在了，可能被移动或删除了');
+    let isDir = false;
+    try {
+      isDir = fs.statSync(abs).isDirectory();
+    } catch {}
+    if (isDir) {
+      const err = await shell.openPath(abs);
+      if (err) {
+        safeLog('warn', '打开目录失败：' + err);
+        return bad('打不开这个目录：' + shortReason(err));
+      }
+      return ok({ path: abs });
+    }
+    shell.showItemInFolder(abs);
+    safeLog('info', '在资源管理器中定位：' + abs);
+    return ok({ path: abs, revealed: true });
   })
 );
 
@@ -363,6 +437,8 @@ ipcMain.handle(
         platform:
           process.platform + ' ' + process.arch + ' ' + (process.getSystemVersion ? process.getSystemVersion() : ''),
         packaged: app.isPackaged,
+        runtime: modeLabel(paths.mode),
+        launchExe: paths.launchExe,
       },
     });
     safeLog('info', '日志已导出：' + out.path);

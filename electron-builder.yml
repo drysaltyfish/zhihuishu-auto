@@ -1,4 +1,8 @@
-# electron-builder 打包配置（Windows / NSIS 安装包）
+# electron-builder 打包配置（Windows / 免安装 Portable）
+# 只出两种免安装产物，不再产出 NSIS 安装包：
+#   - portable：单文件 exe，双击后自解压到自己的 %TEMP% 目录再运行，退出即清理
+#               data/ 靠 PORTABLE_EXECUTABLE_DIR 写回 exe 所在目录（见 desktop/paths-plan.mjs）
+#   - zip     ：解压即用的目录包（推荐，启动最快），data/ 就在 exe 旁边
 appId: com.zhihuishu.auto
 productName: ZhihuishuAuto
 copyright: 仅供本人学习使用，请遵守平台用户协议
@@ -28,30 +32,19 @@ extraResources:
 
 win:
   target:
-    - target: nsis
+    - target: portable
+      arch: [x64]
+    - target: zip
       arch: [x64]
   icon: desktop/assets/icon.ico
-  artifactName: ZhihuishuAuto-Setup-${version}.${ext}
+  # portable 与 zip 共用这个名字，扩展名区分：ZhihuishuAuto-0.1.0-portable.exe / .zip
+  artifactName: ZhihuishuAuto-${version}-portable.${ext}
   requestedExecutionLevel: asInvoker
-  # 让安装包体积小一点：只留中文/英文
+  # 让包体积小一点：只留中文/英文
   electronLanguages:
     - zh-CN
     - en-US
 
-nsis:
-  # 一键安装：没有向导页，直接装到「当前用户」的 %LOCALAPPDATA%\Programs。
-  # 之前用向导式(oneClick:false)时，多用户选择页默认停在「为使用这台电脑的任何人安装」，
-  # 不在管理员身份下写 C:\Program Files 必然失败，用户看到的就是「ZhihuishuAuto 无法关闭」/「不能打开要写入的文件」。
-  oneClick: true
-  perMachine: false
-  allowElevation: false
-  allowToChangeInstallationDirectory: false
-  createDesktopShortcut: true
-  createStartMenuShortcut: true
-  shortcutName: 智慧树自动听课
-  uninstallDisplayName: 智慧树自动听课
-  deleteAppDataOnUninstall: false
-  installerLanguages:
-    - zh_CN
-  language: '2052'
-  runAfterFinish: true
+portable:
+  # 免安装不需要提权；每次启动解压到独立的 %TEMP% 子目录，退出后删除（不要在 %TEMP% 里放数据）
+  requestExecutionLevel: user

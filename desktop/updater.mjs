@@ -1,4 +1,6 @@
-/** 增量更新：electron-updater + electron-builder NSIS 差分包。
+/** 更新检查：electron-updater（只对带 latest.yml 的安装包有效，免安装形态下直接禁用）。
+ * 注意：0.1.0 之后只交付免安装版（Portable exe / 解压即用 zip），electron-builder 的 portable 目标
+ * 不写 update info，electron-updater 也就无法自更新 —— 所以免安装形态下直接禁用并提示「下载新版覆盖」。
  * 没配置更新源时保持禁用，不影响本地使用；配置方式有两种：
  *  1) 打包时带 resources/update.json（{"url":"https://你的静态服务器/updates/"}）
  *  2) 启动前设置环境变量 ZHS_UPDATE_URL
@@ -36,10 +38,19 @@ function readFeedUrl() {
   return '';
 }
 
-export function initUpdater(appLog) {
+export function initUpdater(appLog, opts = {}) {
   log = appLog;
   if (!app.isPackaged) {
     last = { ok: false, state: 'disabled', message: '开发模式不检查更新' };
+    return;
+  }
+  // 免安装版没有安装器可以接管更新，覆盖安装包即可
+  if (opts.isPortable) {
+    last = {
+      ok: false,
+      state: 'disabled',
+      message: '免安装版不支持自动更新：下载新版后解压覆盖即可（data/ 目录不会被覆盖）',
+    };
     return;
   }
   const url = readFeedUrl();

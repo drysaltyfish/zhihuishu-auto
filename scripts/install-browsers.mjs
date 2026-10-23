@@ -48,7 +48,7 @@ function main() {
     }
     rm(from); // 搬走后从 node_modules 里删掉，避免仓库里两份
   }
-  rm(SRC); // 剩下不要的（headless_shell / ffmpeg）也别留在 node_modules，否则会被打进安装包
+  rm(SRC); // 剩下不要的（headless_shell / ffmpeg）也别留在 node_modules，否则会被打进发行包
   const chromium = fs.readdirSync(DST).find((n) => /^chromium-\d+$/.test(n));
   if (!chromium) {
     console.error('[browsers] 没有 chromium-*，搬运失败');
