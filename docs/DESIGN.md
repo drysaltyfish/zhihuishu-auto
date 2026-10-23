@@ -761,3 +761,23 @@ body{overflow:hidden}
 **测试**：\`test/actions.test.mjs\` 里 quit 的期望补丁加 \`browserVisible:false\`，并新增一条「浏览器窗口显示/隐藏：跑起来才能点，且不产生乐观补丁」。全仓 \`npm test\` 149 pass / 0 fail；\`npm run web:build\` 重建出 \`server/public/assets/index-h6CUy_ZP.js\`。
 
 **取舍**：按钮只放在「听课进行中」的按钮组里（IDLE 时窗口还没起来，没有可显示的东西）；窗口真实位置才是唯一真相，所以宁可多一次 SSE 更新，也不做前端假乐观。
+
+### 11.17 自动关闭「学前必读」等提示弹窗
+
+**现象**（2026-10-23 用户反馈）：切课一直「点了没反应」的元凶既不是选择器也不是网速，而是平台在点课程树之后弹出的**「学前必读」**提示弹窗。它带半透明遮罩盖住整页，worker 的真实鼠标点击全落在遮罩上，视频自然不换；`clickLesson()` 内部重试 3 次仍然失败，最后按 11.15 的机制转人工。用户明确要求：把这些「可以关闭的弹窗」自动关掉。
+
+**为什么原来的 `closeDialog()` 不管它**：只认 `#playTopic-dialog` / `[class*="playTopic"]` / `popupExam` / `topicExam` / `exam-dialog`（`DIALOG_BOX_CSS`），都是弹题容器；页内脚本 `DIALOG` 同样只读这些。学前必读是普通 Element UI 对话框（`.el-dialog__wrapper`），原来的代码连「看见」都做不到。
+
+**改法**（页面读取 / 判定 / 执行分三层，便于单测）：
+
+1. 页内只读脚本 `NOTICES`（`server/worker/lib/page-scripts.mjs`）：扫 `.el-dialog__wrapper`、`.el-dialog`、`.el-message-box`、`.layui-layer` 以及 class 含 dialog/modal/popup/notice 的容器，只保留可见、面积 ≥ 140×60 的最外层容器，且**排除含弹题特征的容器**（`#playTopic-dialog` / `[class*="playTopic"]` / `ul.topic-list`）；返回 `{text, path, area, buttons:[{text,path,tag,disabled}], closeIcons, checkbox}`，`path` 是 `nth-of-type` 全路径，供 node 侧做真实鼠标点击。遵守铁律：只读 DOM，不注入、不改页面、不装观察器。
+2. 纯逻辑 `server/worker/lib/notice.mjs`：`isNotice()` 按关键词（学前必读/学习须知/温馨提示…）判定；`isBlocked()` 先把弹题、人机验证、反脚本提示（提交答案、安全验证、拖动滑块、验证码、异常脚本…）排除掉；`planNoticeClose()` 决定点哪个按钮——优先关闭类文案（我知道了/关闭/确定…），其次「开始学习/进入学习」，需要先勾「我已阅读」时返回 `checkFirst`，没有可用按钮就不关（宁可留给人）。
+3. `server/worker/main.mjs` 的 `dismissNotices(why)`：`probe.scanNotices()`（遍历所有 frame，含 iframe）取候选 → `planNoticeClose()` → 需要就先点勾选框 → 点按钮（`clickByPath()`：先用扫描给的路径，失败再按文字找）→ 还不行点 × 图标 → 等 700 ms 复扫确认真的没了，再记一条「关掉提示弹窗「学前必读」」。`answerBusy` 为真或正在关的时候直接返回，避免和弹题处理抢同一个页面。
+4. 挂钩四处：`clickLesson()` 关完弹题之后（切小节前）、重试分支关完第二个弹题之后（点了才弹出来的学前必读正挡在这里）、`gotoCourse()` 进入课程页之后、主循环 `pageState()` 之后（`!st.dialog.visible && Date.now() - lastNoticeScanAt > 4000` 时低频扫一遍，不每秒都扫）。
+
+**测试**：`test/notice.test.mjs` 13 个纯逻辑用例（认识/不认识、弹题与验证不碰、disabled 与超长文字不点、勾选框顺序、label 截断）；`test/notice-page.test.mjs` 5 个 Playwright 用例（fixture `test/fixtures/notice-prelecture.html`：扫得到、`planNoticeClose()` 定出方案、按 path 真的点掉、弹题弹窗不扫进来、`display:none` 扫不到）。全仓 `npm test` 167 pass / 0 fail（此前 149）。
+
+**顺手改的**：`×` 这种纯符号按钮不再算「文字按钮」（否则会被当成一个叫「×」的按钮），单独收进 `closeIcons`；`noticeLabel()` 优先返回命中的关键词，日志里是「学前必读」而不是整段正文。
+
+**取舍**：只关「认得出且一定能安全关掉」的提示，看不清的一律留着并记 `info` 日志（宁可少关，不可误关弹题或验证框）；扫描有 4 秒冷却，不拖慢每秒一拍的采样节奏；点击仍走 Playwright 真实鼠标（`isTrusted`），不用 JS 点。
+

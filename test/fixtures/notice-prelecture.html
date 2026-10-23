@@ -1,0 +1,19 @@
+<!-- 学前必读弹窗：点课程树之后才弹出来，盖住课程树 —— 之前就是它让切课一直「点了没反应」 -->
+<div class="el-dialog__wrapper notice-prelecture" id="prelecture-notice" style="z-index: 2005; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5);">
+  <div role="dialog" aria-modal="true" class="el-dialog" style="width: 520px; margin: 15vh auto; background: #fff; padding: 20px;">
+    <div class="el-dialog__header"><h4 class="notice-title">学前必读</h4>
+      <button type="button" aria-label="Close" class="el-dialog__headerbtn" onclick="document.getElementById('prelecture-notice').style.display='none'">
+        <i class="el-dialog__close el-icon el-icon-close">×</i>
+      </button>
+    </div>
+    <div class="el-dialog__body">
+      <p>本课程为在线课程，请遵守学习纪律，诚信学习，禁止使用外挂刷课。</p>
+      <label><input type="checkbox" id="read-ok"> 我已阅读并同意</label>
+    </div>
+    <div class="el-dialog__footer">
+      <span class="dialog-footer">
+        <div class="btn btn-primary" id="start-btn" onclick="document.getElementById('prelecture-notice').style.display='none'">开始学习</div>
+      </span>
+    </div>
+  </div>
+</div>

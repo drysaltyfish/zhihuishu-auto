@@ -329,8 +329,9 @@ sequenceDiagram
 | 文件 | 职责 | 关键导出 |
 | --- | --- | --- |
 | `server/worker/lib/tick.mjs` | **决策核心**（188 行纯函数）：喂观测 + 记忆 + 配置，吐流程/补丁/日志/动作 | `decide(obs, mem, cfg)` → `{flow, mem, patches, logs, effects}`；`INITIAL_MEM` |
-| `server/worker/lib/probe.mjs` | 帧适配层：在 `page.frames()` 里找弹窗/视频，包一层 `evaluate` | `createProbe()` → `findDialog` / `findVideo` / `pageState` / `readCourseTree` / `readCourseList` / `dialogHtml` |
-| `server/worker/lib/page-scripts.mjs` | 被序列化进页面执行的**只读**脚本与选择器常量（不能引用模块作用域） | `DIALOG_BOX_CSS` / `PLAY_BUTTON_CSS` / `VSTATE` / `DIALOG` / `COURSE_TREE` / `ABNORMAL` / `VERIFY` / `COURSE_LIST` |
+| `server/worker/lib/probe.mjs` | 帧适配层：在 `page.frames()` 里找弹窗/视频/提示弹窗，包一层 `evaluate` | `createProbe()` → `findDialog` / `findVideo` / `pageState` / `readCourseTree` / `readCourseList` / `dialogHtml` / `scanNotices` |
+| `server/worker/lib/page-scripts.mjs` | 被序列化进页面执行的**只读**脚本与选择器常量（不能引用模块作用域） | `DIALOG_BOX_CSS` / `PLAY_BUTTON_CSS` / `VSTATE` / `DIALOG` / `COURSE_TREE` / `ABNORMAL` / `VERIFY` / `COURSE_LIST` / `NOTICES` |
+| `server/worker/lib/notice.mjs` | 提示类弹窗（学前必读等）的纯逻辑判定：关不关、点哪个按钮 | `isNotice()` / `isBlocked()` / `planNoticeClose()` / `noticeLabel()` |
 | `server/worker/lib/question-points.mjs` | 弹题点列表合并与定位 | `mergePoints()` / `toStateList()` / `nearestPoint()` / `markAnswered()` / `nextQuestionOf()` |
 | `server/worker/lib/answer-strategy.mjs` | 无 Key/无选项时的兜底选择、答案比对、历史记录 | `chooseFallback()` / `labelOf()` / `judge()` / `summaryOf()` / `historyEntry()` |
 | `server/worker/lib/quiz-logic.mjs` | 章节测试的题型判定、提示词、字母解析、章节分组 | `buildQuizPrompt()` / `chooseLetters()` / `fallbackIdxs()` / `groupChapters()` / `pickChapterToQuiz()` / `quizListOf()` |
@@ -363,7 +364,7 @@ sequenceDiagram
 | 路径 | 职责 |
 | --- | --- |
 | `test/*.test.mjs`（15 个） | 纯函数单测，见 §11.1 |
-| `test/fixtures/dialog-open.html` / `dialog-answered.html` | 弹窗页内脚本的真实 DOM 夹具（被 `page-scripts.test.mjs` 用真实 Chrome 跑） |
+| `test/fixtures/dialog-open.html` / `dialog-answered.html` / `notice-prelecture.html` | 弹窗页内脚本的真实 DOM 夹具（被 `page-scripts.test.mjs` / `notice-page.test.mjs` 用真实 Chrome 跑） |
 | `scripts/install-browsers.mjs` | 把 Playwright 的 Chromium 复制到仓库 `browsers/`（只留 `chromium-*` / `winldd-*`） |
 | `scripts/selftest.mjs` | 端到端自检：隔离 `ZHS_DATA` 起服务，跑真实引擎空闲页 + mock 引擎全流程，不碰智慧树 |
 | `scripts/boottest.mjs` | 启动验证：真实 worker 能否拉起 Chrome 并进入 `WAIT_LOGIN`（不登录、不进课程），75 秒超时 |
@@ -443,6 +444,8 @@ loop():
 代价与取舍写在 `tick.mjs` 头注释里：这段逻辑原本长在 1422 行的 `main.mjs` 里、119 个分支、36 个模块级 `let`；抽成纯函数后不 import playwright、不 await、不碰全局，所以能单测（`test/tick.test.mjs`）。
 
 **自动切节失败会退位让人接手。** `advance` 的落点是 `maybeAdvanceLesson()`：它按 15 s 节流调用 `clickLesson()`（真实鼠标点课程树，内部已重试 3 次），成功后清 `switchFails` 并 `applyPlaying()`；失败则累计轮数，连续 2 轮（`SWITCH_FAIL_LIMIT`）仍失败就调 `enterManualFix()`：置 `manualPaused = userPaused = true`（借 `decide()` 的 `paused` 分支停掉自动切节与自动播放）、暂停视频、patch `{ phase:'PAUSED', manualHint }`，再用 `showBrowserWindow()` 把隐藏的浏览器窗口叫到前台。此后 `maybeAdvanceLesson()` 直接被 `manualPaused` 挡回，`runEffect` 也不会再补 `onFalse` 的 `ENDED` 状态。用户手动点好一节后点「继续」（`resume`）会清掉这套状态、重置 `endedLogged`、重读课程信息并恢复播放。提示用独立的 `manualHint` 字段（`notice` 只活 7 秒），前端 `store.js` 的 `hint` 给它 `sticky` 标记、不渲染关闭按钮。纯函数部分在 `server/worker/lib/manual-fix.mjs`，单测 `test/manual-fix.test.mjs`。
+
+**「学前必读」这类提示弹窗会被自动关掉。** 平台常在高频切课时弹「学前必读 / 学习须知」：半透明遮罩盖住整页，真实鼠标点击全落在遮罩上，视频永远不换——这是「切课点了没反应」的另一个元凶（11.14 的转人工只是兜底）。处理同样是三层：页内只读脚本 `NOTICES`（`page-scripts.mjs`）只负责把可见的候选弹窗读成 `{text, path, buttons, closeIcons, checkbox}`，并排除弹题容器（`#playTopic-dialog` / `ul.topic-list`）；纯逻辑 `planNoticeClose()`（`notice.mjs`）判断能不能关、点哪个按钮（优先「我知道了/关闭」，其次「开始学习」，需要先勾「我已阅读」时先勾），弹题与验证类（提交答案/安全验证/滑块/验证码）一律不碰；`main.mjs` 的 `dismissNotices()` 用 `probe.scanNotices()` 跨 frame 收集候选、按 path 做真实鼠标点击、700 ms 后复扫确认。挂钩在 `clickLesson()` 前后、`gotoCourse()` 进入课程页之后，以及主循环 `pageState()` 之后（4 秒冷却）。单测 `test/notice.test.mjs`（纯逻辑）与 `test/notice-page.test.mjs`（Playwright + `test/fixtures/notice-prelecture.html`）。
 
 
 ### 6.3 SSE 推送
@@ -756,7 +759,7 @@ runQuiz(key):
 
 ### 11.1 `npm test`（`node --test`）
 
-15 个纯函数单测，覆盖「不需要真浏览器的逻辑」：
+18 个测试文件、共 167 个用例，覆盖「不需要真浏览器的逻辑」；其中 `page-scripts` / `notice-page` / `quiz-scripts` 会真起本机 Chrome 验页内脚本（见下表）。
 
 | 测试文件 | 覆盖对象 | 要点 |
 | --- | --- | --- |
@@ -766,6 +769,9 @@ runQuiz(key):
 | `test/logs.test.mjs` | `server/lib/logs.mjs` | 环形缓冲上限、`kind` 映射、文件写入 |
 | `test/page-scripts.test.mjs` | `server/worker/lib/page-scripts.mjs` | **真起 `chromium.launch({headless:true, channel:'chrome'})`** 在 `test/fixtures/dialog-*.html` 上验弹窗提取 |
 | `test/paths-plan.test.mjs` | `desktop/paths-plan.mjs` | `planRuntime()` 五种形态的 `mode` / 数据目录候选 / `launchExe`，以及 `isTempDir`、`samePath`、`modeLabel` |
+| `test/manual-fix.test.mjs` | `server/worker/lib/manual-fix.mjs` | 自动切节失败计数的升级阈值、给用户看的手动修复提示文案 |
+| `test/notice.test.mjs` | `server/worker/lib/notice.mjs` | 提示弹窗关键词、弹题/验证排除、关闭按钮优先级、先勾选、label 截断 |
+| `test/notice-page.test.mjs` | `NOTICES` + `notice.mjs` | **真起 Chrome** 在 `test/fixtures/notice-prelecture.html` 上验扫描与真实点击关闭、弹题弹窗不误扫 |
 | `test/question-points.test.mjs` | `server/worker/lib/question-points.mjs` | `mergePoints` 三种 mode、`nearestPoint`、`markAnswered` |
 | `test/quiz-logic.test.mjs` | `server/worker/lib/quiz-logic.mjs` | 题型归一化、提示词、字母解析、章节分组与挑选 |
 | `test/quiz-scripts.test.mjs` | `server/worker/lib/quiz-scripts.mjs` | 同样起真实 Chrome 验试卷页提取 |

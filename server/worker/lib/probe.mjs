@@ -4,6 +4,7 @@
  */
 import {
   ABNORMAL,
+  NOTICES,
   COURSE_LIST,
   COURSE_TREE,
   DIALOG,
@@ -105,6 +106,23 @@ export function createProbe({ getPage }) {
     return await p.evaluate(COURSE_TREE);
   }
 
+  /** 扫描所有 frame 里可关闭的提示类弹窗（学前必读/学习须知等） */
+  async function scanNotices() {
+    const p = page();
+    if (!p || p.isClosed()) return [];
+    const out = [];
+    for (const fr of p.frames()) {
+      try {
+        const rows = await fr.evaluate(NOTICES);
+        if (rows && rows.length) {
+          const frameUrl = fr.url();
+          for (const cand of rows) out.push({ frame: fr, cand, frameUrl });
+        }
+      } catch {}
+    }
+    return out;
+  }
+
   async function dialogHtml(frame) {
     try {
       return await frame.evaluate(DIALOG_HTML);
@@ -130,6 +148,7 @@ export function createProbe({ getPage }) {
   return {
     alive,
     findDialog,
+    scanNotices,
     findVideo,
     pageState,
     detectAbnormal,

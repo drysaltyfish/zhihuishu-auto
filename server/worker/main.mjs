@@ -18,6 +18,7 @@ import { DIALOG_BOX_CSS, PLAY_BUTTON_CSS } from './lib/page-scripts.mjs';
 import { createProbe } from './lib/probe.mjs';
 import { decide } from './lib/tick.mjs';
 import { advanceFailStep, manualFixHint } from './lib/manual-fix.mjs';
+import { isNotice, noticeLabel, planNoticeClose } from './lib/notice.mjs';
 import { saveCookies, loadCookies } from './lib/session-store.mjs';
 import { createQuizRunner } from './lib/quiz-runner.mjs';
 import { groupChapters, pickChapterToQuiz, quizListOf, platformDoneMap } from './lib/quiz-logic.mjs';
@@ -657,6 +658,7 @@ async function gotoCourse(url) {
     await sleep(2500);
     if (/stuStudy/i.test(url === '' ? '' : page.url())) {
       log('ok', '已回到上次的课程');
+      await dismissNotices('进入课程页');
       return true;
     }
   } catch (e) {
@@ -755,6 +757,7 @@ async function clickLesson(code) {
       await closeDialog(dlg);
       await sleep(700);
     }
+    await dismissNotices('切小节前');
     const already = lessons.find((l) => l.current);
     if (already && already.code === code) {
       switching = false;
@@ -811,6 +814,8 @@ async function clickLesson(code) {
         await closeDialog(dlg2);
         await sleep(600);
       }
+      // 点了才弹出来的「学前必读」就挡在这里：关掉再点一次
+      await dismissNotices('切小节重试前');
       const box2 = await lis
         .nth(0)
         .count()
@@ -1055,6 +1060,103 @@ async function closeDialog(fd) {
     } catch {}
   }
   return (await findDialog()) ? '没关掉' : '已关闭';
+}
+
+/* ========== 提示类弹窗（学前必读/学习须知等）自动关闭 ========== */
+const NOTICE_COOLDOWN = 4000;
+let lastNoticeScanAt = 0;
+let noticeClosing = false;
+
+/** 点页内某个元素（真实鼠标）：优先用扫描给出的 nth-of-type 路径，失败再按按钮文字找 */
+async function clickByPath(frame, sel, fallbackText) {
+  try {
+    const loc = frame.locator(sel).first();
+    if ((await loc.count()) && (await loc.isVisible().catch(() => false))) {
+      await loc.click({ timeout: 2500 });
+      return true;
+    }
+  } catch {}
+  if (!fallbackText) return false;
+  try {
+    const loc = frame
+      .locator('button, a, [role="button"], [class*="btn"], [class*="Btn"]')
+      .filter({ hasText: fallbackText })
+      .first();
+    if ((await loc.count()) && (await loc.isVisible().catch(() => false))) {
+      await loc.click({ timeout: 2500 });
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * 关掉认得出的提示弹窗，返回被关掉那个的简述（没关掉返回空串）。
+ *
+ * 「学前必读」通常在点课程树之后才弹出来：它盖住课程树和视频，下一轮点击全落在遮罩上，
+ * 于是看起来像「点了没反应」——这是切课失败的元凶。弹题/人机验证一律不碰。
+ */
+async function dismissNotices(why) {
+  if (noticeClosing || answerBusy) return '';
+  if (!page || page.isClosed()) return '';
+  noticeClosing = true;
+  let closed = '';
+  try {
+    const rows = await probe.scanNotices();
+    for (const { frame, cand } of rows) {
+      const plan = planNoticeClose(cand);
+      if (!plan.close) {
+        if (isNotice(cand.text)) log('info', '提示弹窗先留着（' + plan.reason + '）：' + noticeLabel(cand.text));
+        continue;
+      }
+      const label = noticeLabel(cand.text);
+      let checked = false;
+      if (plan.checkFirst && cand.checkbox) {
+        const sel = cand.checkbox.visible ? cand.checkbox.path : cand.checkbox.labelPath || cand.checkbox.path;
+        checked = await clickByPath(frame, sel);
+        if (!checked && cand.checkbox.labelPath) checked = await clickByPath(frame, cand.checkbox.labelPath);
+        if (checked) await sleep(300);
+      }
+      let clicked = false;
+      if (plan.button) {
+        const btn = cand.buttons[plan.button.index] || {};
+        clicked = await clickByPath(frame, btn.path, plan.button.text);
+      }
+      if (!clicked) {
+        for (const icon of cand.closeIcons || []) {
+          if (await clickByPath(frame, icon.path)) {
+            clicked = true;
+            break;
+          }
+        }
+      }
+      if (!clicked) {
+        log('warn', '看到提示弹窗「' + label + '」但没点动（' + plan.reason + '）');
+        continue;
+      }
+      await sleep(700);
+      const still = (await probe.scanNotices()).some((x) => isNotice(x.cand.text));
+      log(
+        still ? 'warn' : 'ok',
+        '关掉提示弹窗「' +
+          label +
+          '」' +
+          (checked ? '（先勾了已阅读）' : '') +
+          (still ? '，但它又冒出来了' : '') +
+          (why ? ' · ' + why : '')
+      );
+      if (!still) {
+        closed = label;
+        return closed;
+      }
+    }
+  } catch (e) {
+    log('warn', '关提示弹窗时出错：' + String((e && e.message) || e).slice(0, 120));
+  } finally {
+    noticeClosing = false;
+    lastNoticeScanAt = Date.now();
+  }
+  return closed;
 }
 
 async function handleDialog(st) {
@@ -1305,6 +1407,10 @@ async function loop() {
     }
 
     const st = await pageState();
+    // 「学前必读」「学习须知」这类提示弹窗会盖住课程树/视频，看到就关掉（弹题、人机验证不碰）
+    if (!st.dialog.visible && Date.now() - lastNoticeScanAt > NOTICE_COOLDOWN) {
+      await dismissNotices('主循环');
+    }
     const plan = decide(
       { video: st.video, dialog: st.dialog },
       {

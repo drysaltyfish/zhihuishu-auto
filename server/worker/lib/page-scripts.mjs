@@ -309,3 +309,105 @@ export const COURSE_LIST = () => {
 /** 课堂页面正文（排错用） */
 export const PAGE_TEXT = () =>
   document.body ? (document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 1200) : '';
+
+/** 提示类弹窗（「学前必读」「学习须知」等）的候选：只读扫描，不改页面 */
+export const NOTICES = () => {
+  const SEL = [
+    '.el-dialog__wrapper',
+    '.el-dialog',
+    '.el-message-box',
+    '.layui-layer',
+    '[class*="dialog"]',
+    '[class*="Dialog"]',
+    '[class*="modal"]',
+    '[class*="Modal"]',
+    '[class*="popup"]',
+    '[class*="Popup"]',
+    '[class*="notice"]',
+    '[class*="Notice"]',
+  ].join(', ');
+  const BTN = 'button, a, [role="button"], [class*="btn"], [class*="Btn"], [class*="close"], [class*="Close"]';
+  const vis = (e) => {
+    if (!e) return false;
+    const b = e.getBoundingClientRect();
+    if (!((e.offsetWidth || 0) > 0 && (e.offsetHeight || 0) > 0)) return false;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    return b.width > 8 && b.height > 8 && b.bottom > 0 && b.right > 0 && b.top < vh + 200 && b.left < vw + 200;
+  };
+  const txt = (e) => ((e && (e.innerText || e.textContent)) || '').replace(/\s+/g, ' ').trim();
+  const pathOf = (el) => {
+    const parts = [];
+    let e = el;
+    while (e && e.nodeType === 1 && e !== document.documentElement) {
+      let i = 1;
+      let s = e;
+      while ((s = s.previousElementSibling)) if (s.tagName === e.tagName) i++;
+      parts.unshift(e.tagName.toLowerCase() + ':nth-of-type(' + i + ')');
+      e = e.parentElement;
+    }
+    return parts.length ? 'html > ' + parts.join(' > ') : '';
+  };
+  const out = [];
+  const boxes = Array.from(document.querySelectorAll(SEL));
+  for (const box of boxes) {
+    if (!vis(box)) continue;
+    // 只要最外层的容器，父子嵌套时别重复读
+    const outer = box.parentElement && box.parentElement.closest(SEL);
+    if (outer && vis(outer)) continue;
+    if (box.querySelector('#playTopic-dialog, [class*="playTopic"], ul.topic-list')) continue;
+    const text = txt(box);
+    if (!text) continue;
+    const rect = box.getBoundingClientRect();
+    if (rect.width < 140 || rect.height < 60) continue;
+    const buttons = [];
+    const closeIcons = [];
+    const seen = new Set();
+    for (const b of Array.from(box.querySelectorAll(BTN))) {
+      if (!vis(b)) continue;
+      const t = txt(b);
+      const cls = (b.className && String(b.className)) || '';
+      if (!t) {
+        if (/close/i.test(cls) || /close/i.test(b.id || '')) closeIcons.push({ path: pathOf(b) });
+        continue;
+      }
+      // 「×」「✕」这类纯符号按钮当关闭图标，不算文本按钮（否则会被当成一个叫「×」的按钮）
+      if (t.length <= 2 && /^[×✕✖xX]+$/.test(t)) {
+        closeIcons.push({ path: pathOf(b) });
+        continue;
+      }
+      if (t.length > 20) continue;
+      if (seen.has(t)) continue;
+      seen.add(t);
+      buttons.push({
+        text: t,
+        path: pathOf(b),
+        tag: b.tagName.toLowerCase(),
+        disabled: !!b.disabled || /disabled/i.test(cls) || b.getAttribute('aria-disabled') === 'true',
+      });
+    }
+    const cbs = Array.from(box.querySelectorAll('input[type="checkbox"]'));
+    let checkbox = null;
+    if (cbs.length) {
+      const cb = cbs[0];
+      const label = box.querySelector('label');
+      checkbox = {
+        path: pathOf(cb),
+        checked: !!cb.checked,
+        visible: vis(cb),
+        labelPath: label ? pathOf(label) : '',
+      };
+    }
+    out.push({
+      text: text.slice(0, 400),
+      path: pathOf(box),
+      area: Math.round(rect.width * rect.height),
+      buttons,
+      closeIcons,
+      checkbox,
+    });
+  }
+  // 面积大的通常是最外层的遮罩/主弹窗，排前面
+  out.sort((a, b) => b.area - a.area);
+  return out;
+};
